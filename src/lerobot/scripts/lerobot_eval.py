@@ -99,6 +99,8 @@ def rollout(
     seeds: list[int] | None = None,
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
+    record_data: bool = False,           
+    record_dir: str | None = None,
 ) -> dict:
     """Run a batched policy rollout once through a batch of environments.
 
@@ -135,6 +137,7 @@ def rollout(
 
     # Reset the policy and environments.
     policy.reset()
+    
     observation, info = env.reset(seed=seeds)
     if render_callback is not None:
         render_callback(env)
@@ -144,6 +147,7 @@ def rollout(
     all_rewards = []
     all_successes = []
     all_dones = []
+    observation_to_save = []
 
     step = 0
     # Keep track of which environments are done.
@@ -161,6 +165,7 @@ def rollout(
         observation = preprocess_observation(observation)
         if return_observations:
             all_observations.append(deepcopy(observation))
+        observation_to_save.append(deepcopy(observation))
 
         # Infer "task" from attributes of environments.
         # TODO: works with SyncVectorEnv but not AsyncVectorEnv
@@ -212,10 +217,13 @@ def rollout(
         progbar.set_postfix({"running_success_rate": f"{running_success_rate.item() * 100:.1f}%"})
         progbar.update()
 
+    observation = preprocess_observation(observation)
+    observation_to_save.append(observation)
+
     # Track the final observation.
     if return_observations:
-        observation = preprocess_observation(observation)
         all_observations.append(deepcopy(observation))
+    
 
     # Stack the sequence along the first dimension so that we have (batch, sequence, *) tensors.
     ret = {
@@ -233,6 +241,31 @@ def rollout(
     if hasattr(policy, "use_original_modules"):
         policy.use_original_modules()
 
+    if record_data:
+        record_dir = Path(record_dir)
+        record_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save per-episode data
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        save_path = record_dir / f"rollout_{timestamp}.pt"
+
+        save_dict = {
+            "actions": torch.stack(all_actions, dim=1).cpu(),
+            "rewards": torch.stack(all_rewards, dim=1).cpu(),
+            "successes": torch.stack(all_successes, dim=1).cpu(),
+            "dones": torch.stack(all_dones, dim=1).cpu(),
+        }
+        # if return_observations:
+        stacked_observations = {}
+        for key in all_observations[0]:
+            stacked_observations[key] = torch.stack(
+                [obs[key] for obs in all_observations], dim=1
+            ).cpu()
+        save_dict["observations"] = stacked_observations
+
+        torch.save(save_dict, save_path)
+        logging.info(f"Saved rollout data to {save_path}")
+
     return ret
 
 
@@ -246,6 +279,8 @@ def eval_policy(
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
+    record: bool = False,
+    record_dir = None
 ) -> dict:
     """
     Args:
@@ -324,6 +359,8 @@ def eval_policy(
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
+            record_data = record,           
+            record_dir = record_dir
         )
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
@@ -481,7 +518,7 @@ def _compile_episode_data(
 
 
 @parser.wrap()
-def eval_main(cfg: EvalPipelineConfig):
+def eval_main(cfg: EvalPipelineConfig, record=False, record_dir=None):
     logging.info(pformat(asdict(cfg)))
 
     # Check device is available
@@ -525,6 +562,9 @@ def eval_main(cfg: EvalPipelineConfig):
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
+            return_episode_data=True,
+            record=record,         
+            record_dir=record_dir,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -565,6 +605,8 @@ def eval_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    record = False,
+    record_dir:str | None
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -580,6 +622,8 @@ def eval_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        record=record,
+        record_dir=record_dir
     )
 
     per_episode = task_result["per_episode"]
@@ -604,6 +648,8 @@ def run_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    record = False,
+    record_dir:str | None
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -626,6 +672,8 @@ def run_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        record=record,
+        record_dir=record_dir
     )
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
@@ -645,6 +693,8 @@ def eval_policy_all(
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
+    record=False,
+    record_dir=None
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -698,6 +748,8 @@ def eval_policy_all(
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        record=record,
+        record_dir=record_dir
     )
 
     if max_parallel_tasks <= 1:
@@ -756,8 +808,10 @@ def eval_policy_all(
 
 
 def main():
+    record = True
+    record_dir = "/home/ubuntu/mount-point/libero"
     init_logging()
-    eval_main()
+    eval_main(record, record_dir)
 
 
 if __name__ == "__main__":
