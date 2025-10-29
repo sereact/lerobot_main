@@ -115,6 +115,7 @@ class LiberoEnv(gym.Env):
         episode_index: int = 0,
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
+        enable_depth: bool = True,
     ):
         super().__init__()
         self.task_id = task_id
@@ -125,6 +126,7 @@ class LiberoEnv(gym.Env):
         self.visualization_width = visualization_width
         self.visualization_height = visualization_height
         self.init_states = init_states
+        self.enable_depth = enable_depth
         self.camera_name = _parse_camera_names(
             camera_name
         )  # agentview_image (main) or robot0_eye_in_hand_image (wrist)
@@ -142,6 +144,7 @@ class LiberoEnv(gym.Env):
         self.camera_name_mapping = camera_name_mapping
         self.num_steps_wait = num_steps_wait
         self.episode_index = episode_index
+        self.enable_depth = enable_depth
         # Load once and keep
         self._init_states = get_task_init_states(task_suite, self.task_id) if self.init_states else None
         self._init_state_id = self.episode_index  # tie each sub-env to a fixed init state
@@ -230,7 +233,7 @@ class LiberoEnv(gym.Env):
             "bddl_file_name": task_bddl_file,
             "camera_heights": self.observation_height,
             "camera_widths": self.observation_width,
-            "camera_depths": True,
+            "camera_depths": self.enable_depth,
             "camera_segmentations": ["class", "class", "class"], 
         }
         env = OffScreenRenderEnv(**env_args)

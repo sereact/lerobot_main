@@ -359,7 +359,7 @@ def eval_policy(
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
-            record_data = record,           
+            record_data = record,
             record_dir = record_dir
         )
 
@@ -531,7 +531,7 @@ def eval_main(cfg: EvalPipelineConfig, record=False, record_dir=None):
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
 
     logging.info("Making environment.")
-    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
+    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs, enable_depth=cfg.env.enable_depth)
 
     logging.info("Making policy.")
 

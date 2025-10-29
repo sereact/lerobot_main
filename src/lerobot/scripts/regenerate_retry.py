@@ -21,7 +21,8 @@ Usage:
         python experiments/robot/libero/regenerate_libero_dataset.py \
             --libero_task_suite libero_spatial \
             --libero_raw_data_dir ./LIBERO/libero/datasets/libero_spatial \
-            --libero_target_dir ./LIBERO/libero/datasets/libero_spatial_no_noops
+            --libero_target_dir ./LIBERO/libero/datasets/libero_spatial_no_noops \
+            --max_retries 10
 
 """
 
@@ -76,6 +77,32 @@ def is_noop(action, prev_action=None, threshold=1e-4):
     prev_gripper_action = prev_action[-1]
     return np.linalg.norm(action[:-1]) < threshold and gripper_action == prev_gripper_action
 
+def normalize_depth_global(depth_frames, global_min=None, global_max=None):
+    """
+    Normalize a list of depth frames to a consistent global min/max range.
+    Returns list of uint16 depth maps.
+    """
+    # Compute global min/max if not provided
+    if global_min is None or global_max is None:
+        all_mins = [np.nanmin(d) for d in depth_frames]
+        all_maxs = [np.nanmax(d) for d in depth_frames]
+        global_min = float(np.min(all_mins))
+        global_max = float(np.max(all_maxs))
+
+    if global_max - global_min < 1e-8:
+        raise ValueError("Global depth range too small for normalization")
+
+    # Apply consistent normalization
+    normalized = []
+    for d in depth_frames:
+        d_norm = (d - global_min) / (global_max - global_min)
+        d_uint16 = np.clip(d_norm * 65535.0, 0, 65535).astype(np.uint16)
+        normalized.append(d_uint16)
+        print("d_uint16", d_uint16.min(), d_uint16.max(), "dtype", d_uint16.dtype)
+        print("global_min", global_min, "global_max", global_max)
+
+    return normalized, global_min, global_max
+
 
 def main(args):
     print(f"Regenerating {args.libero_task_suite} dataset!")
@@ -106,7 +133,8 @@ def main(args):
     num_success = 0
     num_noops = 0
 
-    max_retries = 6
+    # TODO: Make this a flag
+    max_retries = args.max_retries
 
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         task = task_suite.get_task(task_id)
@@ -171,13 +199,19 @@ def main(args):
                     agentview_images.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
                     eye_in_hand_images.append(np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1]))
                     if "agentview_depth" in obs:
-                        agentview_depths.append(np.ascontiguousarray(obs["agentview_depth"][::-1, ::-1]))
+                        d = obs["agentview_depth"]
+                        d = np.ascontiguousarray(d[::-1, ::-1])
+                        agentview_depths.append(d)
                     if "robot0_eye_in_hand_depth" in obs:
-                        eye_in_hand_depths.append(np.ascontiguousarray(obs["robot0_eye_in_hand_depth"][::-1, ::-1]))
+                        d = obs["robot0_eye_in_hand_depth"]
+                        d = np.ascontiguousarray(d[::-1, ::-1])
+                        eye_in_hand_depths.append(d)
                     obs, reward, done, info = env.step(action.tolist())
 
                     if done:
-                        break  # episode succeeded early
+                        done = True
+
+                    #     break  # episode succeeded early
 
                 if done:
                     print(f"[success] Demo {episode_key} succeeded on retry {retry+1}.")
@@ -196,6 +230,10 @@ def main(args):
             rewards[-1] = 1
             assert len(actions) == len(agentview_images)
 
+            scaled_agentview_depths, global_min, global_max = normalize_depth_global(agentview_depths)
+            scaled_eye_in_hand_depths, global_min, global_max = normalize_depth_global(eye_in_hand_depths)
+            print("global_min", global_min, "global_max", global_max)
+
             ep_data_grp = grp.create_group(episode_key)
             obs_grp = ep_data_grp.create_group("obs")
             obs_grp.create_dataset("gripper_states", data=np.stack(gripper_states, axis=0))
@@ -205,8 +243,8 @@ def main(args):
             obs_grp.create_dataset("ee_ori", data=np.stack(ee_states, axis=0)[:, 3:])
             obs_grp.create_dataset("agentview_rgb", data=np.stack(agentview_images, axis=0))
             obs_grp.create_dataset("eye_in_hand_rgb", data=np.stack(eye_in_hand_images, axis=0))
-            obs_grp.create_dataset("agentview_depth", data=np.stack(agentview_depths, axis=0))
-            obs_grp.create_dataset("eye_in_hand_depth", data=np.stack(eye_in_hand_depths, axis=0))
+            obs_grp.create_dataset("agentview_depth", data=np.stack(scaled_agentview_depths, axis=0))
+            obs_grp.create_dataset("eye_in_hand_depth", data=np.stack(scaled_eye_in_hand_depths, axis=0))
             ep_data_grp.create_dataset("actions", data=actions)
             ep_data_grp.create_dataset("states", data=np.stack(states))
             ep_data_grp.create_dataset("robot_states", data=np.stack(robot_states, axis=0))
@@ -245,7 +283,6 @@ def main(args):
     print(f"Saved metainfo JSON at: {metainfo_json_out_path}")
 
 
-# ... (rest of the regenerate_libero_dataset.py script remains the same)
 
 if __name__ == "__main__":
     import multiprocessing
@@ -289,6 +326,12 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="Number of workers per process (not used in this HDF5 script but often for data loading).",
+    )
+    parser.add_argument(
+        "--max_retries",
+        type=int,
+        default=6,
+        help="Maximum number of retries after failure for each demo.",
     )
     args = parser.parse_args()
 
@@ -340,4 +383,4 @@ if __name__ == "__main__":
     for p in processes:
         p.join()
 
-    print("All parallel dataset regenerations complete! 🎉")
+    print("All parallel dataset regenerations complete!")
