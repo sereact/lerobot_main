@@ -1,0 +1,386 @@
+"""
+Adapted from https://github.com/openvla/openvla/blob/main/experiments/robot/libero/regenerate_libero_dataset.py
+
+Regenerates a LIBERO dataset (HDF5 files) by replaying demonstrations in the environments.
+
+Notes:
+    - We save image observations at 256x256px resolution (instead of 128x128).
+    - We filter out transitions with "no-op" (zero) actions that do not change the robot's state.
+    - We filter out unsuccessful demonstrations.
+    - In the LIBERO HDF5 data -> RLDS data conversion (not shown here), we rotate the images by
+    180 degrees because we observe that the environments return images that are upside down
+    on our platform.
+
+Usage:
+    python experiments/robot/libero/regenerate_libero_dataset.py \
+        --libero_task_suite [ libero_spatial | libero_object | libero_goal | libero_10 ] \
+        --libero_raw_data_dir <PATH TO RAW HDF5 DATASET DIR> \
+        --libero_target_dir <PATH TO TARGET DIR>
+
+    Example (LIBERO-Spatial):
+        python experiments/robot/libero/regenerate_libero_dataset.py \
+            --libero_task_suite libero_spatial \
+            --libero_raw_data_dir ./LIBERO/libero/datasets/libero_spatial \
+            --libero_target_dir ./LIBERO/libero/datasets/libero_spatial_no_noops \
+            --max_retries 10
+
+"""
+
+import argparse
+import json
+import os
+
+import h5py
+import numpy as np
+import robosuite.utils.transform_utils as T
+import tqdm
+from libero.libero import benchmark, get_libero_path
+from libero.libero.envs import OffScreenRenderEnv
+
+
+def get_libero_dummy_action(model_family: str):
+    """Get dummy/no-op action, used to roll out the simulation while the robot does nothing."""
+    return [0, 0, 0, 0, 0, 0, -1]
+
+
+def get_libero_env(task, model_family, resolution=480):
+    """Initializes and returns the LIBERO environment, along with the task description."""
+    task_description = task.language
+    task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
+    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution, "camera_depths": True}
+    env = OffScreenRenderEnv(**env_args)
+    env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
+    return env, task_description
+
+
+def is_noop(action, prev_action=None, threshold=1e-4):
+    """
+    Returns whether an action is a no-op action.
+
+    A no-op action satisfies two criteria:
+        (1) All action dimensions, except for the last one (gripper action), are near zero.
+        (2) The gripper action is equal to the previous timestep's gripper action.
+
+    Explanation of (2):
+        Naively filtering out actions with just criterion (1) is not good because you will
+        remove actions where the robot is staying still but opening/closing its gripper.
+        So you also need to consider the current state (by checking the previous timestep's
+        gripper action as a proxy) to determine whether the action really is a no-op.
+    """
+    # Special case: Previous action is None if this is the first action in the episode
+    # Then we only care about criterion (1)
+    if prev_action is None:
+        return np.linalg.norm(action[:-1]) < threshold
+
+    # Normal case: Check both criteria (1) and (2)
+    gripper_action = action[-1]
+    prev_gripper_action = prev_action[-1]
+    return np.linalg.norm(action[:-1]) < threshold and gripper_action == prev_gripper_action
+
+def normalize_depth_global(depth_frames, global_min=None, global_max=None):
+    """
+    Normalize a list of depth frames to a consistent global min/max range.
+    Returns list of uint16 depth maps.
+    """
+    # Compute global min/max if not provided
+    if global_min is None or global_max is None:
+        all_mins = [np.nanmin(d) for d in depth_frames]
+        all_maxs = [np.nanmax(d) for d in depth_frames]
+        global_min = float(np.min(all_mins))
+        global_max = float(np.max(all_maxs))
+
+    if global_max - global_min < 1e-8:
+        raise ValueError("Global depth range too small for normalization")
+
+    # Apply consistent normalization
+    normalized = []
+    for d in depth_frames:
+        d_norm = (d - global_min) / (global_max - global_min)
+        d_uint16 = np.clip(d_norm * 65535.0, 0, 65535).astype(np.uint16)
+        normalized.append(d_uint16)
+        print("d_uint16", d_uint16.min(), d_uint16.max(), "dtype", d_uint16.dtype)
+        print("global_min", global_min, "global_max", global_max)
+
+    return normalized, global_min, global_max
+
+
+def main(args):
+    print(f"Regenerating {args.libero_task_suite} dataset!")
+
+    # Create target directory
+    if os.path.isdir(args.libero_target_dir):
+        user_input = input(
+            f"Target directory already exists at path: {args.libero_target_dir}\nEnter 'y' to overwrite the directory, or anything else to exit: "
+        )
+        if user_input != "y":
+            exit()
+    os.makedirs(args.libero_target_dir, exist_ok=True)
+
+    # Prepare JSON file to record success/false and initial states per episode
+    metainfo_json_dict = {}
+    metainfo_json_out_path = f"./experiments/robot/libero/{args.libero_task_suite}_metainfo.json"
+    with open(metainfo_json_out_path, "w") as f:
+        # Just test that we can write to this file (we overwrite it later)
+        json.dump(metainfo_json_dict, f)
+
+    # Get task suite
+    benchmark_dict = benchmark.get_benchmark_dict()
+    task_suite = benchmark_dict[args.libero_task_suite]()
+    num_tasks_in_suite = task_suite.n_tasks
+
+    # Setup
+    num_replays = 0
+    num_success = 0
+    num_noops = 0
+
+    # TODO: Make this a flag
+    max_retries = args.max_retries
+
+    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+        task = task_suite.get_task(task_id)
+        env, task_description = get_libero_env(task, "llava", resolution=args.resolution)
+
+        orig_data_path = os.path.join(args.libero_raw_data_dir, f"{task.name}_demo.hdf5")
+        assert os.path.exists(orig_data_path), f"Cannot find raw data file {orig_data_path}."
+        orig_data_file = h5py.File(orig_data_path, "r")
+        orig_data = orig_data_file["data"]
+
+        new_data_path = os.path.join(args.libero_target_dir, f"{task.name}_demo.hdf5")
+        new_data_file = h5py.File(new_data_path, "w")
+        grp = new_data_file.create_group("data")
+
+        task_key = task_description.replace(" ", "_")
+        prev_successes = (
+            {k for k, v in metainfo_json_dict.get(task_key, {}).items() if v.get("success", False)}
+            if task_key in metainfo_json_dict
+            else set()
+        )
+
+        for i in range(len(orig_data.keys())):
+            episode_key = f"demo_{i}"
+            if episode_key in prev_successes:
+                print(f"[skip] Demo {episode_key} already succeeded previously.")
+                continue
+
+            demo_data = orig_data[episode_key]
+            orig_actions = demo_data["actions"][()]
+            orig_states = demo_data["states"][()]
+
+            done = False
+            for retry in range(max_retries):
+                env.reset()
+                env.set_init_state(orig_states[0])
+                for _ in range(10):
+                    obs, reward, done, info = env.step(get_libero_dummy_action("llava"))
+
+                states, actions = [], []
+                ee_states, gripper_states, joint_states, robot_states = [], [], [], []
+                agentview_images, eye_in_hand_images = [], []
+                agentview_depths, eye_in_hand_depths = [], []
+
+                for _, action in enumerate(orig_actions):
+                    prev_action = actions[-1] if actions else None
+                    if states == []:
+                        states.append(orig_states[0])
+                        robot_states.append(demo_data["robot_states"][0])
+                    else:
+                        states.append(env.sim.get_state().flatten())
+                        robot_states.append(
+                            np.concatenate([obs["robot0_gripper_qpos"], obs["robot0_eef_pos"], obs["robot0_eef_quat"]])
+                        )
+
+                    actions.append(action)
+                    if "robot0_gripper_qpos" in obs:
+                        gripper_states.append(obs["robot0_gripper_qpos"])
+                    joint_states.append(obs["robot0_joint_pos"])
+                    ee_states.append(
+                        np.hstack((obs["robot0_eef_pos"], T.quat2axisangle(obs["robot0_eef_quat"])))
+                    )
+                    agentview_images.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
+                    eye_in_hand_images.append(np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1]))
+                    if "agentview_depth" in obs:
+                        d = obs["agentview_depth"]
+                        d = np.ascontiguousarray(d[::-1, ::-1])
+                        agentview_depths.append(d)
+                    if "robot0_eye_in_hand_depth" in obs:
+                        d = obs["robot0_eye_in_hand_depth"]
+                        d = np.ascontiguousarray(d[::-1, ::-1])
+                        eye_in_hand_depths.append(d)
+                    obs, reward, done, info = env.step(action.tolist())
+
+                    if done:
+                        done = True
+
+                    #     break  # episode succeeded early
+
+                if done:
+                    print(f"[success] Demo {episode_key} succeeded on retry {retry+1}.")
+                    break
+                else:
+                    print(f"[retry] Demo {episode_key} failed (attempt {retry+1}/{max_retries}). Retrying...")
+
+            if not done:
+                print(f"[fail] Demo {episode_key} failed after {max_retries} retries. Skipping.")
+                continue
+
+            # Save successful demo
+            dones = np.zeros(len(actions)).astype(np.uint8)
+            dones[-1] = 1
+            rewards = np.zeros(len(actions)).astype(np.uint8)
+            rewards[-1] = 1
+            assert len(actions) == len(agentview_images)
+
+            scaled_agentview_depths, global_min, global_max = normalize_depth_global(agentview_depths)
+            scaled_eye_in_hand_depths, global_min, global_max = normalize_depth_global(eye_in_hand_depths)
+            print("global_min", global_min, "global_max", global_max)
+
+            ep_data_grp = grp.create_group(episode_key)
+            obs_grp = ep_data_grp.create_group("obs")
+            obs_grp.create_dataset("gripper_states", data=np.stack(gripper_states, axis=0))
+            obs_grp.create_dataset("joint_states", data=np.stack(joint_states, axis=0))
+            obs_grp.create_dataset("ee_states", data=np.stack(ee_states, axis=0))
+            obs_grp.create_dataset("ee_pos", data=np.stack(ee_states, axis=0)[:, :3])
+            obs_grp.create_dataset("ee_ori", data=np.stack(ee_states, axis=0)[:, 3:])
+            obs_grp.create_dataset("agentview_rgb", data=np.stack(agentview_images, axis=0))
+            obs_grp.create_dataset("eye_in_hand_rgb", data=np.stack(eye_in_hand_images, axis=0))
+            obs_grp.create_dataset("agentview_depth", data=np.stack(scaled_agentview_depths, axis=0))
+            obs_grp.create_dataset("eye_in_hand_depth", data=np.stack(scaled_eye_in_hand_depths, axis=0))
+            ep_data_grp.create_dataset("actions", data=actions)
+            ep_data_grp.create_dataset("states", data=np.stack(states))
+            ep_data_grp.create_dataset("robot_states", data=np.stack(robot_states, axis=0))
+            ep_data_grp.create_dataset("rewards", data=rewards)
+            ep_data_grp.create_dataset("dones", data=dones)
+
+            num_success += 1
+            num_replays += 1
+
+            # Record success in metainfo
+            if task_key not in metainfo_json_dict:
+                metainfo_json_dict[task_key] = {}
+            metainfo_json_dict[task_key][episode_key] = {
+                "success": True,
+                "initial_state": orig_states[0].tolist(),
+            }
+
+            with open(metainfo_json_out_path, "w") as f:
+                json.dump(metainfo_json_dict, f, indent=2)
+
+            print(
+                f"Total # episodes replayed: {num_replays}, "
+                f"Total # successes: {num_success} ({num_success / num_replays * 100:.1f} %)"
+            )
+
+        orig_data_file.close()
+        if len(new_data_file["data"]) == 0:
+            new_data_file.close()
+            os.remove(new_data_path)
+            print(f"[cleanup] No successes for {task_description}, deleted empty file.")
+        else:
+            new_data_file.close()
+            print(f"Saved regenerated demos for task '{task_description}' at: {new_data_path}")
+
+    print(f"Dataset regeneration complete! Saved new dataset at: {args.libero_target_dir}")
+    print(f"Saved metainfo JSON at: {metainfo_json_out_path}")
+
+
+
+if __name__ == "__main__":
+    import multiprocessing
+    # ----------------------------------------------------------------------
+    # 1. Modify Argument Parsing
+    # ----------------------------------------------------------------------
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resolution", type=int, default=480, help="Resolution of the images. Example: 480")
+    
+    # Change from a single choice to nargs='+' to accept multiple task suites
+    parser.add_argument(
+        "--libero_task_suite",
+        type=str,
+        nargs='+',  # This allows multiple arguments for this flag
+        choices=["libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"],
+        help="LIBERO task suite(s). Example: libero_spatial libero_object",
+        required=True,
+    )
+    parser.add_argument(
+        "--libero_raw_data_dir_root", # Renamed to accept a root path
+        type=str,
+        help="Root path to directory containing raw HDF5 datasets (will append suite name).",
+        required=True,
+    )
+    parser.add_argument(
+        "--libero_target_dir_root", # Renamed to accept a root path
+        type=str,
+        help="Root path to regenerated dataset directory (will append suite name and a suffix).",
+        required=True,
+    )
+    parser.add_argument(
+        "--gpus",
+        type=int,
+        nargs='*', # Accepts zero or more GPU IDs
+        default=[],
+        help="List of GPU IDs to use for parallel processing (e.g., 0 1 2). Workload will be distributed round-robin.",
+    )
+    # Add num_workers (though this is less critical for the HDF5 step, it's included for generality)
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="Number of workers per process (not used in this HDF5 script but often for data loading).",
+    )
+    parser.add_argument(
+        "--max_retries",
+        type=int,
+        default=6,
+        help="Maximum number of retries after failure for each demo.",
+    )
+    args = parser.parse_args()
+
+    # ----------------------------------------------------------------------
+    # 2. Parallel Execution Logic
+    # ----------------------------------------------------------------------
+    print(f"Starting parallel dataset regeneration for: {args.libero_task_suite}")
+    processes = []
+    
+    for idx, suite_name in enumerate(args.libero_task_suite):
+        # 1. Clone the main arguments object
+        suite_args = argparse.Namespace(**vars(args)) 
+        suite_args.libero_task_suite = suite_name # Single suite name
+
+        # 2. Construct suite-specific paths
+        suite_args.libero_raw_data_dir = os.path.join(
+            args.libero_raw_data_dir_root, suite_name, suite_name
+        )
+        
+        suite_args.libero_target_dir = os.path.join(
+            args.libero_target_dir_root, f"{suite_name}_reg"
+        )
+
+        print(f"Configuring process for {suite_name}:")
+        print(f"  Raw Data: {suite_args.libero_raw_data_dir}")
+        print(f"  Target Dir: {suite_args.libero_target_dir}")
+        
+        # 3. GPU Assignment Logic
+        gpu_id = None
+        if args.gpus:
+            gpu_id = args.gpus[idx % len(args.gpus)]
+            print(f"  Assigned GPU: {gpu_id}")
+        
+        # Create a wrapper function to set the environment variable
+        def run_main_with_gpu(process_args, assigned_gpu_id):
+            if assigned_gpu_id is not None:
+                # Set CUDA_VISIBLE_DEVICES to ensure the Robosuite/Mujoco process uses the correct GPU
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(assigned_gpu_id)
+            
+            # NOTE: The main script does not use 'num_workers', but we pass it anyway.
+            main(process_args)
+
+        # Create and start a new process
+        p = multiprocessing.Process(target=run_main_with_gpu, args=(suite_args, gpu_id))
+        processes.append(p)
+        p.start()
+
+    # Wait for all processes to finish
+    for p in processes:
+        p.join()
+
+    print("All parallel dataset regenerations complete!")

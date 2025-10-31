@@ -68,6 +68,57 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
 
             return_observations[imgkey] = img_tensor
 
+    if "depth" in observations:
+        depths = (
+            {f"observation.depth.{k}": v for k, v in observations["depth"].items()}
+            if isinstance(observations["depth"], dict)
+            else {"observation.depth": observations["depth"]}
+        )
+        i = 0
+        for depthkey, depth in depths.items():
+            if i == 0:
+                depthkey = "observation.depths.image"
+            if i == 1:
+                depthkey = "observation.depths.image2"
+            depth_tensor = torch.from_numpy(depth)
+            if depth_tensor.ndim == 3:
+                depth_tensor = depth_tensor.unsqueeze(0)
+            # Ensure shape (B, 1, H, W)
+            if depth_tensor.ndim == 4 and depth_tensor.shape[-1] == 1:
+                depth_tensor = einops.rearrange(depth_tensor, "b h w c -> b c h w")
+            elif depth_tensor.ndim == 3:
+                depth_tensor = depth_tensor.unsqueeze(1)
+            depth_tensor = depth_tensor.to(torch.float32)
+            return_observations[depthkey] = depth_tensor
+            i += 1
+    
+    if "segmentation" in observations:
+        masks = (
+            {f"observation.mask.{k}": v for k, v in observations["mask"].items()}
+            if isinstance(observations["mask"], dict)
+            else {"observation.mask": observations["mask"]}
+        )
+        for i, (maskkey, mask) in enumerate(masks.items()):
+            if i == 0:
+                maskkey = "observation.masks.image"
+            elif i == 1:
+                maskkey = "observation.masks.image2"
+
+            mask_tensor = torch.from_numpy(mask)
+            if mask_tensor.ndim == 3:
+                mask_tensor = mask_tensor.unsqueeze(0)
+            if mask_tensor.ndim == 4 and mask_tensor.shape[-1] == 1:
+                mask_tensor = einops.rearrange(mask_tensor, "b h w c -> b c h w")
+            elif mask_tensor.ndim == 3:
+                mask_tensor = mask_tensor.unsqueeze(1)
+            mask_tensor = mask_tensor.to(torch.float32)
+
+            # Normalize if mask is not already binary
+            if mask_tensor.max() > 1.0:
+                mask_tensor /= 255.0
+
+            return_observations[maskkey] = mask_tensor
+
     if "environment_state" in observations:
         env_state = torch.from_numpy(observations["environment_state"]).float()
         if env_state.dim() == 1:
@@ -89,6 +140,10 @@ def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
     # (need to also refactor preprocess_observation and externalize normalization from policies)
     policy_features = {}
     for key, ft in env_cfg.features.items():
+        if "depth" in key:
+            continue
+        if "mask" in key:
+            continue
         if ft.type is FeatureType.VISUAL:
             if len(ft.shape) != 3:
                 raise ValueError(f"Number of dimensions of {key} != 3 (shape={ft.shape})")
