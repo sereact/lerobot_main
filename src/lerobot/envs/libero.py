@@ -237,9 +237,28 @@ class LiberoEnv(gym.Env):
             "camera_segmentations": ["class", "class", "class"], 
         }
         env = OffScreenRenderEnv(**env_args)
-        obs, info = env.reset()
-        print(obs.keys())
-        print(f"env.observation_space: {env.observation_space}")
+        obs = env.reset()
+        # # DEBUG depth images
+        # print("obs keys", obs.keys())
+        # from PIL import Image
+        # import numpy as np
+        # from pathlib import Path
+
+        # def save_gray_png(depth_array, path):
+        #     arr = np.squeeze(depth_array)  # remove trailing (1) dimension if present
+        #     arr = arr.astype(np.float32)
+        #     arr -= np.nanmin(arr)
+        #     if np.nanmax(arr) > 0:
+        #         arr /= np.nanmax(arr)
+        #     arr = (arr * 255).astype(np.uint8)
+        #     Image.fromarray(arr, mode="L").save(path)
+        #         # Normalize + save depth
+        # save_dir = Path("libero_obs")
+        # save_dir.mkdir(exist_ok=True)
+        # print("Depth val", obs["agentview_depth"])
+        # save_gray_png(obs["agentview_depth"], save_dir / "agentview_depth.png")
+        # save_gray_png(obs["robot0_eye_in_hand_depth"], save_dir / "hand_depth.png")
+
         return env
 
     def _format_raw_obs(self, raw_obs: dict[str, Any]) -> dict[str, Any]:

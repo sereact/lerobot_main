@@ -23,6 +23,7 @@ venv.bak/
 __pypackages__/
 node_modules/
 pi05_libero/
+libero_obs/
 # Lock files
 poetry.lock
 uv.lock
