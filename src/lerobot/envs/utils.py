@@ -28,6 +28,41 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.envs.configs import EnvConfig
 from lerobot.utils.constants import OBS_ENV_STATE, OBS_IMAGE, OBS_IMAGES, OBS_STATE
 from lerobot.utils.utils import get_channel_first_image_shape
+from pathlib import Path
+from PIL import Image
+
+CAMERA_NAME_MAPPING = {
+    "agentview": "image",
+    "robot0_eye_in_hand": "image2",
+}
+
+
+def save_depth_as_png(depth_array: np.ndarray, file_path: str | Path):
+    """
+    Save a depth map (float32) to a grayscale PNG image for visualization.
+
+    Args:
+        depth_array (np.ndarray): Depth map of shape (H, W) or (H, W, 1)
+        file_path (str | Path): Output file path (.png)
+    """
+    # remove singleton dimension
+    depth = np.squeeze(depth_array).astype(np.float32)
+
+    # handle NaNs/infs
+    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # normalize for visualization
+    if np.max(depth) > 0:
+        depth_norm = depth / np.max(depth)
+    else:
+        depth_norm = depth
+
+    # scale to 0–255 for PNG
+    depth_img = (depth_norm * 255).astype(np.uint8)
+
+    # save as grayscale PNG
+    Image.fromarray(depth_img, mode="L").save(file_path)
+    print(f"✅ Saved depth visualization: {file_path}")
 
 
 def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Tensor]:
@@ -69,29 +104,23 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
             return_observations[imgkey] = img_tensor
 
     if "depth" in observations:
-        depths = (
-            {f"observation.depth.{k}": v for k, v in observations["depth"].items()}
-            if isinstance(observations["depth"], dict)
-            else {"observation.depth": observations["depth"]}
-        )
-        i = 0
-        for depthkey, depth in depths.items():
-            if i == 0:
-                depthkey = "observation.depths.image"
-            if i == 1:
-                depthkey = "observation.depths.image2"
+        for cam_alias, depth in observations["depth"].items():
+            # consistent key naming for dataset / model
+            depthkey = f"observation.depths.{cam_alias}"
+            intrinsics_key = f"observation.intrinsics.{cam_alias}"
+
             depth_tensor = torch.from_numpy(depth)
-            if depth_tensor.ndim == 3:
-                depth_tensor = depth_tensor.unsqueeze(0)
+            depth_tensor = depth_tensor.unsqueeze(0)
             # Ensure shape (B, 1, H, W)
-            if depth_tensor.ndim == 4 and depth_tensor.shape[-1] == 1:
-                depth_tensor = einops.rearrange(depth_tensor, "b h w c -> b c h w")
-            elif depth_tensor.ndim == 3:
-                depth_tensor = depth_tensor.unsqueeze(1)
+            depth_tensor = einops.rearrange(depth_tensor, "b h w c -> b c h w")
+
             depth_tensor = depth_tensor.to(torch.float32)
             return_observations[depthkey] = depth_tensor
-            i += 1
-    
+
+            # --- Intrinsics ---
+            if "intrinsics" in observations and cam_alias in observations["intrinsics"]:
+                intrinsics = torch.from_numpy(observations["intrinsics"][cam_alias]).float()
+                return_observations[intrinsics_key] = intrinsics
     if "segmentation" in observations:
         masks = (
             {f"observation.mask.{k}": v for k, v in observations["mask"].items()}
@@ -143,6 +172,8 @@ def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
         if "depth" in key:
             continue
         if "mask" in key:
+            continue
+        if "intrinsics" in key:
             continue
         if ft.type is FeatureType.VISUAL:
             if len(ft.shape) != 3:

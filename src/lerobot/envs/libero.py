@@ -30,7 +30,6 @@ from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from robosuite.utils.transform_utils import quat2axisangle
 
-
 def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     """Normalize camera_name into a non-empty list of strings."""
     if isinstance(camera_name, str):
@@ -42,7 +41,6 @@ def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     if not cams:
         raise ValueError("camera_name resolved to an empty list.")
     return cams
-
 
 def _get_suite(name: str) -> benchmark.Benchmark:
     """Instantiate a LIBERO suite by name with clear validation."""
@@ -95,7 +93,6 @@ TASK_SUITE_MAX_STEPS: dict[str, int] = {
     "libero_90": 400,  # longest training demo has 373 steps
 }
 
-
 class LiberoEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 80}
 
@@ -144,7 +141,6 @@ class LiberoEnv(gym.Env):
         self.camera_name_mapping = camera_name_mapping
         self.num_steps_wait = num_steps_wait
         self.episode_index = episode_index
-        self.enable_depth = enable_depth
         # Load once and keep
         self._init_states = get_task_init_states(task_suite, self.task_id) if self.init_states else None
         self._init_state_id = self.episode_index  # tie each sub-env to a fixed init state
@@ -161,15 +157,23 @@ class LiberoEnv(gym.Env):
                 shape=(self.observation_height, self.observation_width, 3),
                 dtype=np.uint8,
             )
-        depths = {}
-        for cam in self.camera_name:
-            depths[self.camera_name_mapping[cam]] = spaces.Box(
-                low=0.0,
-                high=10.0,  # adjust to your depth range, e.g. meters
-                shape=(self.observation_height, self.observation_width, 1),
-                dtype=np.float32,
-            )
-
+        if self.enable_depth:
+            depths = {}
+            for cam in self.camera_name:
+                depths[self.camera_name_mapping[cam]] = spaces.Box(
+                    low=0.0,
+                    high=10.0,  # adjust to your depth range, e.g. meters
+                    shape=(self.observation_height, self.observation_width, 1),
+                    dtype=np.float32,
+                )
+            intrinsics = {}
+            for cam in self.camera_name:
+                intrinsics[self.camera_name_mapping[cam]] = spaces.Box(
+                    low=0.0,
+                    high=1.0,
+                    shape=(3, 3),
+                    dtype=np.float32,
+                )
         masks = {}
         for cam in self.camera_name:
             masks[self.camera_name_mapping[cam]] = spaces.Box(
@@ -190,6 +194,7 @@ class LiberoEnv(gym.Env):
                 {
                     "pixels": spaces.Dict(images),
                     "depth": spaces.Dict(depths),
+                    "intrinsics": spaces.Dict(intrinsics),
                 }
             )
         elif self.obs_type == "pixels_agent_pos":
@@ -197,6 +202,7 @@ class LiberoEnv(gym.Env):
                 {
                     "pixels": spaces.Dict(images),
                     "depth": spaces.Dict(depths),
+                    "intrinsics": spaces.Dict(intrinsics),
                     "agent_pos": spaces.Box(
                         low=AGENT_POS_LOW,
                         high=AGENT_POS_HIGH,
@@ -221,6 +227,25 @@ class LiberoEnv(gym.Env):
         raw_obs = self._env.env._get_observations()
         image = self._format_raw_obs(raw_obs)["pixels"]["image"]
         return image
+
+    def _get_camera_intrinsics(self, cam_name: str, width: int, height: int) -> np.ndarray:
+        """Compute intrinsic matrix from camera parameters (MuJoCo FOV)."""
+        cam_id = self._env.sim.model.camera_name2id(cam_name)
+        fovy = float(self._env.sim.model.cam_fovy[cam_id])  # degrees
+        fovy_rad = np.deg2rad(fovy)
+
+        f_y = (height / 2.0) / np.tan(fovy_rad / 2.0)
+        f_x = f_y  # assume square pixels
+        c_x = width / 2.0
+        c_y = height / 2.0
+
+        K = np.array(
+            [[f_x, 0, c_x],
+            [0, f_y, c_y],
+            [0, 0, 1]],
+            dtype=np.float32
+        )
+        return K
 
     def _make_envs_task(self, task_suite: Any, task_id: int = 0):
         task = task_suite.get_task(task_id)
@@ -265,6 +290,7 @@ class LiberoEnv(gym.Env):
         images = {}
         images_depth = {}
         images_mask = {}
+        images_intrinsics = {}
         for camera_name in self.camera_name:
             image = raw_obs[camera_name]
             image = image[::-1, ::-1]  # rotate 180 degrees
@@ -276,28 +302,24 @@ class LiberoEnv(gym.Env):
                 raw_obs["robot0_gripper_qpos"],
             )
         )
-        for depth_key in ["agentview_depth", "robot0_eye_in_hand_depth"]:
-            depth_name_mapping = {
-                "agentview": "image",
-                "robot0_eye_in_hand": "image2"
-            }
-            cam_alias = depth_name_mapping.get(depth_key.replace("_depth", ""), depth_key)
+        for key in self.camera_name:
+            depth_key = key.replace("_image", "_depth")
+            cam_key = key.replace("_image", "")
+            cam_alias = self.camera_name_mapping.get(cam_key, cam_key)
+            intrinsics_alias = key.replace("_image", "_intrinsics")
 
             if depth_key in raw_obs:
                 depth_img = raw_obs[depth_key]
                 # Remove extra singleton dimension if necessary
                 depth_img = np.squeeze(depth_img)  # remove all singleton dims
-                if depth_img.ndim == 2:
-                    depth_img = np.expand_dims(depth_img, axis=-1)
-                elif depth_img.ndim > 3:
-                    raise ValueError(f"Unexpected depth shape for {depth_key}: {depth_img.shape}")
-
                 depth_img = depth_img.astype(np.float32)
             else:
                 depth_img = np.zeros(
                     (self.observation_height, self.observation_width, 1), dtype=np.float32
                 )
             images_depth[cam_alias] = depth_img
+            intrinsics = self._get_camera_intrinsics(cam_key, self.observation_width, self.observation_height)
+            images_intrinsics[intrinsics_alias] = intrinsics
         for mask_key in ["agentview_segmentation_class", "robot0_eye_in_hand_segmentation_class"]:
             mask_name_mapping = {
                 "agentview": "image",
@@ -328,6 +350,7 @@ class LiberoEnv(gym.Env):
                 "pixels": images.copy(),
                 "depth": images_depth,
                 "mask": images_mask,
+                "intrinsics": images_intrinsics,
                 "agent_pos": agent_pos,
             }
         raise NotImplementedError(
@@ -347,7 +370,7 @@ class LiberoEnv(gym.Env):
         # Increasing this value can improve determinism and reproducibility across resets.
         for _ in range(self.num_steps_wait):
             raw_obs, _, _, _ = self._env.step(get_libero_dummy_action())
-        observation = self._format_raw_obs(raw_obs)
+        observation = self._format_raw_obs(raw_obs) 
         info = {"is_success": False}
         return observation, info
 

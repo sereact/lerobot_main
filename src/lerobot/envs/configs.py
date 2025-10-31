@@ -265,6 +265,14 @@ class LiberoEnv(EnvConfig):
             type=FeatureType.VISUAL,
             shape=(self.observation_height, self.observation_width, 1),
         )
+        self.features["intrinsics/agentview_image"] = PolicyFeature(
+            type=FeatureType.INTRINSICS,
+            shape=(3, 3),
+        )
+        self.features["intrinsics/robot0_eye_in_hand_image"] = PolicyFeature(
+            type=FeatureType.INTRINSICS,
+            shape=(3, 3),
+        )
         self.features["masks/agentview_image"] = PolicyFeature(
             type=FeatureType.VISUAL,
             shape=(self.observation_height, self.observation_width, 1),

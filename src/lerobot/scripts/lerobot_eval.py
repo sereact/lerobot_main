@@ -81,7 +81,7 @@ from lerobot.envs.utils import (
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
-from lerobot.utils.constants import ACTION, DONE, OBS_STR, REWARD
+from lerobot.utils.constants import ACTION, DONE, OBS_STR, REWARD, OBS_PREFIX
 from lerobot.utils.io_utils import write_video
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.utils import (
@@ -96,8 +96,8 @@ from lerobot.datasets.utils import build_dataset_frame, combine_feature_dicts
 def get_features():
     features = {
         "timestamp": {"dtype": "float32", "shape": (1,)},
-        "observation.state": {"dtype": "float32", "shape": (7,)},
-        "action": {"dtype": "float32", "shape": (7,)},
+        "observation.state": {"dtype": "float32", "shape": (8,),"names": ["x", "y", "z", "rx", "ry", "rz", "extra", "grip"]},
+        "action": {"dtype": "float32", "shape": (7,),"names": ["x", "y", "z", "rx", "ry", "rz", "grip"]},
         "observation.task_instr": {"dtype": "string", "shape": (1,)},
         "action_type": {"dtype": "string", "shape": (1,)},
     }
@@ -268,179 +268,6 @@ def rollout(
 
     if hasattr(policy, "use_original_modules"):
         policy.use_original_modules()
-
-    if record_data:
-        record_dir = Path(record_dir)
-        record_dir.mkdir(parents=True, exist_ok=True)
-
-
-        # --- Prepare data ---
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        save_path = record_dir / f"rollout_{timestamp}.h5"
-
-        # Stack and convert to numpy
-        actions_np = torch.stack(all_actions, dim=1).cpu().numpy()
-        rewards_np = torch.stack(all_rewards, dim=1).cpu().numpy()
-        dones_np = torch.stack(all_dones, dim=1).cpu().numpy()
-
-        # Stack all observations into arrays
-        stacked_observations = {}
-        for key in all_observations[0]:
-            stacked_observations[key] = torch.stack(
-                [obs[key] for obs in all_observations], dim=1
-            ).cpu().numpy()
-
-        num_envs = actions_np.shape[0]
-        num_steps = actions_np.shape[1]
-
-        logging.info(f"Saving rollout data to {save_path}")
-
-        # --- Write HDF5 structured like demos ---
-        with h5py.File(save_path, "w") as f:
-            for env_idx in range(num_envs):
-                demo_name = f"demo_{env_idx}"
-                grp = f.create_group(demo_name)
-
-                # Core episode arrays
-                grp.create_dataset("actions", data=actions_np[env_idx], compression="gzip")
-                grp.create_dataset("rewards", data=rewards_np[env_idx], compression="gzip")
-                grp.create_dataset("dones", data=dones_np[env_idx], compression="gzip")
-
-                # Derived / robot state information
-                if "robot0_joint_pos" in stacked_observations:
-                    grp.create_dataset(
-                        "joint_states",
-                        data=stacked_observations["robot0_joint_pos"][env_idx],
-                        compression="gzip",
-                    )
-                if "robot0_gripper_qpos" in stacked_observations:
-                    grp.create_dataset(
-                        "gripper_states",
-                        data=stacked_observations["robot0_gripper_qpos"][env_idx],
-                    )
-                if "robot0_eef_pos" in stacked_observations:
-                    grp.create_dataset(
-                        "ee_pos",
-                        data=stacked_observations["robot0_eef_pos"][env_idx],
-                        compression="gzip",
-                    )
-                if "robot0_eef_quat" in stacked_observations:
-                    grp.create_dataset(
-                        "ee_ori",
-                        data=stacked_observations["robot0_eef_quat"][env_idx],
-                        compression="gzip",
-                    )
-
-                # Combine into 'robot_states' array if possible
-                robot_states = []
-                for k in ["robot0_joint_pos", "robot0_eef_pos", "robot0_gripper_qpos"]:
-                    if k in stacked_observations:
-                        robot_states.append(stacked_observations[k][env_idx])
-                if robot_states:
-                    grp.create_dataset(
-                        "robot_states", data=np.concatenate(robot_states, axis=-1), compression="gzip"
-                    )
-
-                # Environment state if available
-                if "object-state" in stacked_observations:
-                    grp.create_dataset(
-                        "states",
-                        data=stacked_observations["object-state"][env_idx],
-                        compression="gzip",
-                    )
-
-                # RGB images
-                if "agentview_image" in stacked_observations:
-                    grp.create_dataset(
-                        "agentview_rgb",
-                        data=stacked_observations["agentview_image"][env_idx],
-                        compression="gzip",
-                    )
-                if "robot0_eye_in_hand_image" in stacked_observations:
-                    grp.create_dataset(
-                        "eye_in_hand_rgb",
-                        data=stacked_observations["robot0_eye_in_hand_image"][env_idx],
-                        compression="gzip",
-                    )
-
-                # Full observation dump for reference
-                obs_grp = grp.create_group("obs")
-                for k, v in stacked_observations.items():
-                    obs_grp.create_dataset(k, data=v[env_idx], compression="gzip")
-
-        logging.info(f"Saved rollout to {save_path} (HDF5 structured format)")
-
-    # if record_data:
-    #     record_dir = Path(record_dir)
-    #     record_dir.mkdir(parents=True, exist_ok=True)
-    #     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    #     if record_data and record_dir:
-    #         dataset_root = record_dir / f"rollout_{timestamp}"
-    #         dataset_root.mkdir(parents=True, exist_ok=True)
-
-    #         # Dynamically infer robot and camera info if available
-    #         robot_name = getattr(env.unwrapped, "robot_name", "unknown_robot")
-    #         fps = env.unwrapped.metadata.get("render_fps", 20)
-
-    #         dataset = LeRobotDataset.create(
-    #             repo_id=f"local/{robot_name}_eval_{timestamp}",
-    #             fps=fps,
-    #             root=str(dataset_root),
-    #             robot_type=robot_name,
-    #             features=get_features(),  # or dataset_features if defined globally
-    #             use_videos=False,  # no video encoding, raw images
-    #             image_writer_processes=2,
-    #             image_writer_threads=4,
-    #             batch_encoding_size=16,
-    #         )
-    #     else:
-    #         dataset = None
-
-    #     num_envs = env.num_envs
-    #     # Save per-episode data
-    #     # timestamp = time.strftime("%Y%m%d_%H%M%S")
-    #     # save_path = record_dir / f"rollout_{timestamp}.pt"
-
-    #     # save_dict = {
-    #     #     "actions": torch.stack(all_actions, dim=1).cpu(),
-    #     #     "rewards": torch.stack(all_rewards, dim=1).cpu(),
-    #     #     "successes": torch.stack(all_successes, dim=1).cpu(),
-    #     #     "dones": torch.stack(all_dones, dim=1).cpu(),
-    #     # }
-    #     # # if return_observations:
-    #     # stacked_observations = {}
-    #     # for key in all_observations[0]:
-    #     #     stacked_observations[key] = torch.stack(
-    #     #         [obs[key] for obs in all_observations], dim=1
-    #     #     ).cpu()
-    #     # save_dict["observations"] = stacked_observations
-
-    #     # torch.save(save_dict, save_path)
-    #     # logging.info(f"Saved rollout data to {save_path}")
-    #     for t in range(len(all_actions)):
-    #         for env_idx in range(num_envs):
-    #             # Current observation
-    #             obs = {k: v[env_idx].cpu().numpy() for k, v in all_observations[t].items()}
-
-    #             # Action, reward, done
-    #             action_np = all_actions[t][env_idx].cpu().numpy()
-    #             reward_val = float(all_rewards[t][env_idx].cpu().numpy())
-    #             done_val = bool(all_dones[t][env_idx].cpu().numpy())
-
-    #             # Build frames in dataset format
-    #             obs_frame = build_dataset_frame(dataset.features, obs)
-    #             action_frame = build_dataset_frame(dataset.features, action_np, prefix=ACTION)
-    #             frame = {
-    #                 **obs_frame,
-    #                 **action_frame,
-    #                 REWARD: reward_val,
-    #                 DONE: done_val,
-    #                 "task": getattr(env, "task_id", 0),
-    #             }
-
-    #             dataset.add_frame(frame)
-
-    #         dataset.save_episode()
 
     return ret
 
@@ -742,7 +569,7 @@ def eval_main(cfg: EvalPipelineConfig, record=False, record_dir=None):
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
             return_episode_data=True,
-            record=record,         
+            record=record,
             record_dir=record_dir,
         )
         print("Overall Aggregated Metrics:")
