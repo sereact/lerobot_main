@@ -295,6 +295,40 @@ lerobot-train --config_path=lerobot/diffusion_pusht
 
 reproduces SOTA results for Diffusion Policy on the PushT task.
 
+### Remote policy evaluation (experimental)
+In case you have a custom model served through an HTTP API,
+you can delegate action selection to an external HTTP service by using the `remote` policy. 
+Install the dedicated dependencies and start the demo server:
+
+```bash
+pip install -e ".[server]"
+uvicorn examples.remote.remote_policy_server:app --host 0.0.0.0 --port 8000
+```
+
+The sample FastAPI app simply echoes zero actions with the requested shape, which is useful to validate end-to-end wiring before deploying a real model.
+
+To evaluate the Libero benchmark through the remote policy, run:
+
+```bash
+lerobot-eval \
+  --env.type=libero \
+  --env.task=libero_spatial \
+  --env.max_parallel_tasks=1 \
+  --eval.batch_size=1 \
+  --eval.n_episodes=3 \
+  --policy.type=remote \
+  --policy.server_url=http://localhost:8000 \
+  --policy.timeout=30 \
+  --policy.attempts=3 \
+  --policy.n_action_steps=10 \
+  --policy.additional_args='{"dataset_info":{"action_type":"eef","robot_embodiment":"single_arm","robot_type":"franka","stereo_replace_depth":false,"handheld":false,"no_state":false,"obs_dof":8,"action_dof":7},"inference_config":{"n_actions":6,"n_inference_steps":10}}' \
+  --rename_map='{"observation.images.image":"observation.images.static1","observation.images.image2":"observation.images.wrist1"}' \
+  --output_dir=./eval_logs_libero_spatial
+```
+
+The `additional_args` payload is forwarded to the remote server alongside the observation batch and can be adjusted to match your remote model’s expectations.
+
+
 ## Contribute
 
 If you would like to contribute to 🤗 LeRobot, please check out our [contribution guide](https://github.com/huggingface/lerobot/blob/main/CONTRIBUTING.md).

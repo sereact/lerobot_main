@@ -145,6 +145,13 @@ pusht = ["gym-pusht>=0.1.5,<0.2.0", "pymunk>=6.6.0,<7.0.0"] # TODO: Fix pymunk v
 libero = ["lerobot[transformers-dep]", "libero @ git+https://github.com/huggingface/lerobot-libero.git@main#egg=libero"]
 metaworld = ["metaworld==3.0.0"]
 
+# HTTP server extra
+server = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.30.0,<1.0.0",
+    "msgpack>=1.0.8,<2.0.0",
+]
+
 # All
 all = [
     "lerobot[dynamixel]",
@@ -167,6 +174,7 @@ all = [
     "lerobot[phone]",
     "lerobot[libero]",
     "lerobot[metaworld]",
+    "lerobot[server]",
 ]
 
 [project.scripts]
