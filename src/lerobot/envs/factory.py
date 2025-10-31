@@ -33,7 +33,7 @@ def make_env_config(env_type: str, **kwargs) -> EnvConfig:
 
 
 def make_env(
-    cfg: EnvConfig, n_envs: int = 1, use_async_envs: bool = False
+    cfg: EnvConfig, n_envs: int = 1, use_async_envs: bool = False, enable_depth: bool = True
 ) -> dict[str, dict[int, gym.vector.VectorEnv]]:
     """Makes a gym vector environment according to the config.
 
@@ -72,6 +72,7 @@ def make_env(
             init_states=cfg.init_states,
             gym_kwargs=cfg.gym_kwargs,
             env_cls=env_cls,
+            enable_depth=cfg.enable_depth,
         )
     elif "metaworld" in cfg.type:
         from lerobot.envs.metaworld import create_metaworld_envs

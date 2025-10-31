@@ -237,7 +237,9 @@ class LiberoEnv(gym.Env):
             "camera_segmentations": ["class", "class", "class"], 
         }
         env = OffScreenRenderEnv(**env_args)
-        env.reset()
+        obs, info = env.reset()
+        print(obs.keys())
+        print(f"env.observation_space: {env.observation_space}")
         return env
 
     def _format_raw_obs(self, raw_obs: dict[str, Any]) -> dict[str, Any]:
@@ -404,6 +406,7 @@ def create_libero_envs(
     camera_name: str | Sequence[str] = "agentview_image,robot0_eye_in_hand_image",
     init_states: bool = True,
     env_cls: Callable[[Sequence[Callable[[], Any]]], Any] | None = None,
+    enable_depth: bool = True,
 ) -> dict[str, dict[int, Any]]:
     """
     Create vectorized LIBERO environments with a consistent return shape.

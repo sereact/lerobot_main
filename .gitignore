@@ -29,7 +29,6 @@ uv.lock
 Pipfile.lock
 
 
-pi05_libero/
 ### Build & Distribution ###
 build/
 dist/
@@ -179,4 +178,5 @@ outputs/
 *.urdf
 *.xml
 *.part
-pi05_libero/
+
+eval_logs*

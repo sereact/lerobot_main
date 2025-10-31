@@ -296,7 +296,7 @@ class LiberoEnv(EnvConfig):
         return {
             "obs_type": self.obs_type,
             "render_mode": self.render_mode,
-            # "include_depth": self.include_depth,
+            "enable_depth": self.enable_depth,
         }
 
 
