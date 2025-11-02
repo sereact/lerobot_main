@@ -305,13 +305,10 @@ class LiberoEnv(gym.Env):
         for key in self.camera_name:
             depth_key = key.replace("_image", "_depth")
             cam_key = key.replace("_image", "")
-            cam_alias = self.camera_name_mapping.get(cam_key, cam_key)
-            intrinsics_alias = key.replace("_image", "_intrinsics")
+            cam_alias = self.camera_name_mapping.get(key, cam_key)
 
             if depth_key in raw_obs:
                 depth_img = raw_obs[depth_key]
-                # Remove extra singleton dimension if necessary
-                depth_img = np.squeeze(depth_img)  # remove all singleton dims
                 depth_img = depth_img.astype(np.float32)
             else:
                 depth_img = np.zeros(
@@ -319,7 +316,7 @@ class LiberoEnv(gym.Env):
                 )
             images_depth[cam_alias] = depth_img
             intrinsics = self._get_camera_intrinsics(cam_key, self.observation_width, self.observation_height)
-            images_intrinsics[intrinsics_alias] = intrinsics
+            images_intrinsics[cam_alias] = intrinsics
         for mask_key in ["agentview_segmentation_class", "robot0_eye_in_hand_segmentation_class"]:
             mask_name_mapping = {
                 "agentview": "image",

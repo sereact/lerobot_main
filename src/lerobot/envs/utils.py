@@ -110,7 +110,6 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
             intrinsics_key = f"observation.intrinsics.{cam_alias}"
 
             depth_tensor = torch.from_numpy(depth)
-            depth_tensor = depth_tensor.unsqueeze(0)
             # Ensure shape (B, 1, H, W)
             depth_tensor = einops.rearrange(depth_tensor, "b h w c -> b c h w")
 
