@@ -36,35 +36,6 @@ CAMERA_NAME_MAPPING = {
     "robot0_eye_in_hand": "image2",
 }
 
-
-def save_depth_as_png(depth_array: np.ndarray, file_path: str | Path):
-    """
-    Save a depth map (float32) to a grayscale PNG image for visualization.
-
-    Args:
-        depth_array (np.ndarray): Depth map of shape (H, W) or (H, W, 1)
-        file_path (str | Path): Output file path (.png)
-    """
-    # remove singleton dimension
-    depth = np.squeeze(depth_array).astype(np.float32)
-
-    # handle NaNs/infs
-    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # normalize for visualization
-    if np.max(depth) > 0:
-        depth_norm = depth / np.max(depth)
-    else:
-        depth_norm = depth
-
-    # scale to 0–255 for PNG
-    depth_img = (depth_norm * 255).astype(np.uint8)
-
-    # save as grayscale PNG
-    Image.fromarray(depth_img, mode="L").save(file_path)
-    print(f"✅ Saved depth visualization: {file_path}")
-
-
 def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Tensor]:
     # TODO(aliberts, rcadene): refactor this to use features from the environment (no hardcoding)
     """Convert environment observation to LeRobot format observation.
@@ -210,7 +181,6 @@ def check_env_attributes_and_types(env: gym.vector.VectorEnv) -> None:
                 UserWarning,
                 stacklevel=2,
             )
-
 
 def add_envs_task(env: gym.vector.VectorEnv, observation: dict[str, Any]) -> dict[str, Any]:
     """Adds task feature to the observation dict with respect to the first environment attribute."""
