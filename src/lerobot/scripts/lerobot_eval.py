@@ -129,8 +129,6 @@ def rollout(
     seeds: list[int] | None = None,
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
-    record_data: bool = False,
-    record_dir: str | None = None,
 ) -> dict:
     """Run a batched policy rollout once through a batch of environments.
 
@@ -177,7 +175,6 @@ def rollout(
     all_rewards = []
     all_successes = []
     all_dones = []
-    observation_to_save = []
 
     step = 0
     # Keep track of which environments are done.
@@ -195,8 +192,6 @@ def rollout(
         observation = preprocess_observation(observation)
         if return_observations:
             all_observations.append(deepcopy(observation))
-        observation_to_save.append(deepcopy(observation))
-
         # Infer "task" from attributes of environments.
         # TODO: works with SyncVectorEnv but not AsyncVectorEnv
         observation = add_envs_task(env, observation)
@@ -249,7 +244,6 @@ def rollout(
 
 
     observation = preprocess_observation(observation)
-    observation_to_save.append(observation)
 
     # Track the final observation.
     if return_observations:
@@ -270,112 +264,6 @@ def rollout(
     if hasattr(policy, "use_original_modules"):
         policy.use_original_modules()
 
-    if record_data:
-        record_dir = Path(record_dir)
-        record_dir.mkdir(parents=True, exist_ok=True)
-
-
-        # --- Prepare data ---
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        save_path = record_dir / f"rollout_{timestamp}.h5"
-
-        # Stack and convert to numpy
-        actions_np = torch.stack(all_actions, dim=1).cpu().numpy()
-        rewards_np = torch.stack(all_rewards, dim=1).cpu().numpy()
-        dones_np = torch.stack(all_dones, dim=1).cpu().numpy()
-
-        # Stack all observations into arrays
-        stacked_observations = {}
-        for key in all_observations[0]:
-            stacked_observations[key] = torch.stack(
-                [obs[key] for obs in all_observations], dim=1
-            ).cpu().numpy()
-
-        num_envs = actions_np.shape[0]
-
-        logging.info(f"Saving rollout data to {save_path}")
-
-        # --- Write HDF5 structured like demos ---
-        with h5py.File(save_path, "w") as f:
-            for env_idx in range(num_envs):
-                demo_name = f"demo_{env_idx}"
-                grp = f.create_group(demo_name)
-
-                # Core episode arrays
-                grp.create_dataset("actions", data=actions_np[env_idx], compression="gzip")
-                grp.create_dataset("rewards", data=rewards_np[env_idx], compression="gzip")
-                grp.create_dataset("dones", data=dones_np[env_idx], compression="gzip")
-
-                # Derived / robot state information
-                if "robot0_joint_pos" in stacked_observations:
-                    grp.create_dataset(
-                        "joint_states",
-                        data=stacked_observations["robot0_joint_pos"][env_idx],
-                        compression="gzip",
-                    )
-                if "robot0_gripper_qpos" in stacked_observations:
-                    grp.create_dataset(
-                        "gripper_states",
-                        data=stacked_observations["robot0_gripper_qpos"][env_idx],
-                    )
-                if "robot0_eef_pos" in stacked_observations:
-                    grp.create_dataset(
-                        "ee_pos",
-                        data=stacked_observations["robot0_eef_pos"][env_idx],
-                        compression="gzip",
-                    )
-                if "robot0_eef_quat" in stacked_observations:
-                    grp.create_dataset(
-                        "ee_ori",
-                        data=stacked_observations["robot0_eef_quat"][env_idx],
-                        compression="gzip",
-                    )
-
-                # Combine into 'robot_states' array if possible
-                robot_states = []
-                for k in ["robot0_joint_pos", "robot0_eef_pos", "robot0_gripper_qpos"]:
-                    if k in stacked_observations:
-                        robot_states.append(stacked_observations[k][env_idx])
-                if robot_states:
-                    grp.create_dataset(
-                        "robot_states", data=np.concatenate(robot_states, axis=-1), compression="gzip"
-                    )
-
-                # Environment state if available
-                if "object-state" in stacked_observations:
-                    grp.create_dataset(
-                        "states",
-                        data=stacked_observations["object-state"][env_idx],
-                        compression="gzip",
-                    )
-
-                for cam in CAMERA_NAME_MAPPING.keys():
-                    # RGB images
-                    if f"{cam}_image" in stacked_observations:
-                        grp.create_dataset(
-                            f"{cam}_rgb",
-                            data=stacked_observations[f"{cam}_image"][env_idx],
-                            compression="gzip",
-                        )
-                    if f"{cam}_depth" in stacked_observations:
-                        grp.create_dataset(
-                            f"{cam}_depth",
-                            data=stacked_observations[f"{cam}_depth"][env_idx],
-                            compression="gzip",
-                        )
-                    if f"{cam}_intrinsics" in stacked_observations:
-                        grp.create_dataset(
-                            f"{cam}_intrinsics",
-                            data=stacked_observations[f"{cam}_intrinsics"][env_idx],
-                            compression="gzip",
-                        )
-                # Full observation dump for reference
-                obs_grp = grp.create_group("obs")
-                for k, v in stacked_observations.items():
-                    obs_grp.create_dataset(k, data=v[env_idx], compression="gzip")
-
-        logging.info(f"Saved rollout to {save_path} (HDF5 structured format)")
-
     return ret
 
 
@@ -389,8 +277,6 @@ def eval_policy(
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
-    record: bool = False,
-    record_dir = None
 ) -> dict:
     """
     Args:
@@ -469,8 +355,6 @@ def eval_policy(
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
-            record_data = record,
-            record_dir = record_dir
         )
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
@@ -628,7 +512,7 @@ def _compile_episode_data(
 
 
 @parser.wrap()
-def eval_main(cfg: EvalPipelineConfig, record=False, record_dir=None):
+def eval_main(cfg: EvalPipelineConfig):
     logging.info(pformat(asdict(cfg)))
 
     # Check device is available
@@ -676,8 +560,6 @@ def eval_main(cfg: EvalPipelineConfig, record=False, record_dir=None):
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
             return_episode_data=True,
-            record=record,
-            record_dir=record_dir,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -718,8 +600,6 @@ def eval_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
-    record = False,
-    record_dir:str | None
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -735,8 +615,6 @@ def eval_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
-        record=record,
-        record_dir=record_dir
     )
 
     per_episode = task_result["per_episode"]
@@ -761,8 +639,6 @@ def run_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
-    record = False,
-    record_dir:str | None
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -785,8 +661,6 @@ def run_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
-        record=record,
-        record_dir=record_dir
     )
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
@@ -806,8 +680,6 @@ def eval_policy_all(
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
-    record=False,
-    record_dir=None
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -861,8 +733,6 @@ def eval_policy_all(
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
-        record=record,
-        record_dir=record_dir
     )
 
     if max_parallel_tasks <= 1:
@@ -921,10 +791,8 @@ def eval_policy_all(
 
 
 def main():
-    record = True
-    record_dir = "/home/ubuntu/mount-point/libero"
     init_logging()
-    eval_main(record, record_dir)
+    eval_main()
 
 
 if __name__ == "__main__":
