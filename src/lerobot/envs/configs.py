@@ -33,7 +33,6 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
     max_parallel_tasks: int = 1
     disable_env_checker: bool = True
     enable_depth: bool = False
-    enable_masks: bool = False
 
     @property
     def type(self) -> str:
@@ -241,7 +240,6 @@ class LiberoEnv(EnvConfig):
     observation_height: int = 360
     observation_width: int = 360
     enable_depth: bool = True
-    enable_masks: bool = True
     features: dict[str, PolicyFeature] = field(
         default_factory=lambda: {
             ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,)),
@@ -275,15 +273,6 @@ class LiberoEnv(EnvConfig):
                 type=FeatureType.INTRINSICS,
                 shape=(3, 3),
             )
-        if self.enable_masks:
-            self.features["masks/agentview_image"] = PolicyFeature(
-                type=FeatureType.VISUAL,
-                shape=(self.observation_height, self.observation_width, 1),
-            )
-            self.features["masks/robot0_eye_in_hand_image"] = PolicyFeature(
-                type=FeatureType.VISUAL,
-                shape=(self.observation_height, self.observation_width, 1),
-            )
         if self.obs_type == "pixels":
             self.features["pixels/agentview_image"] = PolicyFeature(
                 type=FeatureType.VISUAL, shape=(self.observation_height, self.observation_width, 3)
@@ -308,7 +297,6 @@ class LiberoEnv(EnvConfig):
             "obs_type": self.obs_type,
             "render_mode": self.render_mode,
             "enable_depth": self.enable_depth,
-            "enable_masks": self.enable_masks,
         }
 
 

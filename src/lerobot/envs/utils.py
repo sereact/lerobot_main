@@ -91,33 +91,6 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
             if "intrinsics" in observations and cam_alias in observations["intrinsics"]:
                 intrinsics = torch.from_numpy(observations["intrinsics"][cam_alias]).float()
                 return_observations[intrinsics_key] = intrinsics
-    if "segmentation" in observations:
-        masks = (
-            {f"observation.mask.{k}": v for k, v in observations["mask"].items()}
-            if isinstance(observations["mask"], dict)
-            else {"observation.mask": observations["mask"]}
-        )
-        for i, (maskkey, mask) in enumerate(masks.items()):
-            if i == 0:
-                maskkey = "observation.masks.image"
-            elif i == 1:
-                maskkey = "observation.masks.image2"
-
-            mask_tensor = torch.from_numpy(mask)
-            if mask_tensor.ndim == 3:
-                mask_tensor = mask_tensor.unsqueeze(0)
-            if mask_tensor.ndim == 4 and mask_tensor.shape[-1] == 1:
-                mask_tensor = einops.rearrange(mask_tensor, "b h w c -> b c h w")
-            elif mask_tensor.ndim == 3:
-                mask_tensor = mask_tensor.unsqueeze(1)
-            mask_tensor = mask_tensor.to(torch.float32)
-
-            # Normalize if mask is not already binary
-            if mask_tensor.max() > 1.0:
-                mask_tensor /= 255.0
-
-            return_observations[maskkey] = mask_tensor
-
     if "environment_state" in observations:
         env_state = torch.from_numpy(observations["environment_state"]).float()
         if env_state.dim() == 1:
@@ -140,8 +113,6 @@ def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
     policy_features = {}
     for key, ft in env_cfg.features.items():
         if "depth" in key:
-            continue
-        if "mask" in key:
             continue
         if "intrinsics" in key:
             continue

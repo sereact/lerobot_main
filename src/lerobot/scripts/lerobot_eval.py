@@ -525,7 +525,7 @@ def eval_main(cfg: EvalPipelineConfig):
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
 
     logging.info("Making environment.")
-    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs, enable_depth=cfg.env.enable_depth, enable_masks=cfg.env.enable_masks)
+    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs, enable_depth=cfg.env.enable_depth)
 
     logging.info("Making policy.")
 
