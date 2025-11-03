@@ -98,10 +98,29 @@ def normalize_depth_global(depth_frames, global_min=None, global_max=None):
         d_norm = (d - global_min) / (global_max - global_min)
         d_uint16 = np.clip(d_norm * 65535.0, 0, 65535).astype(np.uint16)
         normalized.append(d_uint16)
-        print("d_uint16", d_uint16.min(), d_uint16.max(), "dtype", d_uint16.dtype)
-        print("global_min", global_min, "global_max", global_max)
+        # print("d_uint16", d_uint16.min(), d_uint16.max(), "dtype", d_uint16.dtype)
+        # print("global_min", global_min, "global_max", global_max)
 
     return normalized, global_min, global_max
+
+def get_camera_intrinsics(env, cam_name: str, width: int, height: int) -> np.ndarray:
+    """Compute intrinsic matrix from camera parameters (MuJoCo FOV)."""
+    cam_id = env.sim.model.camera_name2id(cam_name)
+    fovy = float(env.sim.model.cam_fovy[cam_id])  # degrees
+    fovy_rad = np.deg2rad(fovy)
+
+    f_y = (height / 2.0) / np.tan(fovy_rad / 2.0)
+    f_x = f_y  # assume square pixels
+    c_x = width / 2.0
+    c_y = height / 2.0
+
+    K = np.array(
+        [[f_x, 0, c_x],
+        [0, f_y, c_y],
+        [0, 0, 1]],
+        dtype=np.float32
+    )
+    return K
 
 
 def main(args):
@@ -177,8 +196,11 @@ def main(args):
                 ee_states, gripper_states, joint_states, robot_states = [], [], [], []
                 agentview_images, eye_in_hand_images = [], []
                 agentview_depths, eye_in_hand_depths = [], []
-
+                intrinsics_a, intrinsics_e = [], []
+                intrinsics_agentview = get_camera_intrinsics(env, "agentview", 480, 480)
+                intrinsics_eye_in_hand = get_camera_intrinsics(env, "robot0_eye_in_hand", 480, 480)
                 for _, action in enumerate(orig_actions):
+
                     prev_action = actions[-1] if actions else None
                     if states == []:
                         states.append(orig_states[0])
@@ -189,6 +211,7 @@ def main(args):
                             np.concatenate([obs["robot0_gripper_qpos"], obs["robot0_eef_pos"], obs["robot0_eef_quat"]])
                         )
 
+                    # print(obs["robot0_joint_pos"], obs["robot0_eef_pos"], obs["robot0_eef_quat"])
                     actions.append(action)
                     if "robot0_gripper_qpos" in obs:
                         gripper_states.append(obs["robot0_gripper_qpos"])
@@ -198,6 +221,9 @@ def main(args):
                     )
                     agentview_images.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
                     eye_in_hand_images.append(np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1]))
+
+                    intrinsics_a.append(intrinsics_agentview)
+                    intrinsics_e.append(intrinsics_eye_in_hand)
                     if "agentview_depth" in obs:
                         d = obs["agentview_depth"]
                         d = np.ascontiguousarray(d[::-1, ::-1])
@@ -232,7 +258,7 @@ def main(args):
 
             scaled_agentview_depths, global_min, global_max = normalize_depth_global(agentview_depths)
             scaled_eye_in_hand_depths, global_min, global_max = normalize_depth_global(eye_in_hand_depths)
-            print("global_min", global_min, "global_max", global_max)
+            # print("global_min", global_min, "global_max", global_max)
 
             ep_data_grp = grp.create_group(episode_key)
             obs_grp = ep_data_grp.create_group("obs")
@@ -245,6 +271,8 @@ def main(args):
             obs_grp.create_dataset("eye_in_hand_rgb", data=np.stack(eye_in_hand_images, axis=0))
             obs_grp.create_dataset("agentview_depth", data=np.stack(scaled_agentview_depths, axis=0))
             obs_grp.create_dataset("eye_in_hand_depth", data=np.stack(scaled_eye_in_hand_depths, axis=0))
+            obs_grp.create_dataset("intrinsics_agentview", data=np.stack(intrinsics_a, axis=0))
+            obs_grp.create_dataset("intrinsics_eye_in_hand", data=np.stack(intrinsics_e, axis=0))
             ep_data_grp.create_dataset("actions", data=actions)
             ep_data_grp.create_dataset("states", data=np.stack(states))
             ep_data_grp.create_dataset("robot_states", data=np.stack(robot_states, axis=0))
