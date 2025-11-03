@@ -256,23 +256,23 @@ class LiberoEnv(EnvConfig):
     )
 
     def __post_init__(self):
-        # if self.include_depth:
-        self.features["depth/agentview_image"] = PolicyFeature(
-            type=FeatureType.VISUAL,
-            shape=(self.observation_height, self.observation_width, 1),
-        )
-        self.features["depth/robot0_eye_in_hand_image"] = PolicyFeature(
-            type=FeatureType.VISUAL,
-            shape=(self.observation_height, self.observation_width, 1),
-        )
-        self.features["intrinsics/agentview_image"] = PolicyFeature(
-            type=FeatureType.INTRINSICS,
-            shape=(3, 3),
-        )
-        self.features["intrinsics/robot0_eye_in_hand_image"] = PolicyFeature(
-            type=FeatureType.INTRINSICS,
-            shape=(3, 3),
-        )
+        if self.enable_depth:
+            self.features["depth/agentview_image"] = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(self.observation_height, self.observation_width, 1),
+            )
+            self.features["depth/robot0_eye_in_hand_image"] = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(self.observation_height, self.observation_width, 1),
+            )
+            self.features["intrinsics/agentview_image"] = PolicyFeature(
+                type=FeatureType.INTRINSICS,
+                shape=(3, 3),
+            )
+            self.features["intrinsics/robot0_eye_in_hand_image"] = PolicyFeature(
+                type=FeatureType.INTRINSICS,
+                shape=(3, 3),
+            )
         self.features["masks/agentview_image"] = PolicyFeature(
             type=FeatureType.VISUAL,
             shape=(self.observation_height, self.observation_width, 1),
