@@ -113,7 +113,6 @@ class LiberoEnv(gym.Env):
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
         enable_depth: bool = True,
-        enable_masks: bool = True,
     ):
         super().__init__()
         self.task_id = task_id
@@ -125,7 +124,6 @@ class LiberoEnv(gym.Env):
         self.visualization_height = visualization_height
         self.init_states = init_states
         self.enable_depth = enable_depth
-        self.enable_masks = enable_masks
         self.camera_name = _parse_camera_names(
             camera_name
         )  # agentview_image (main) or robot0_eye_in_hand_image (wrist)
@@ -176,16 +174,6 @@ class LiberoEnv(gym.Env):
                     shape=(3, 3),
                     dtype=np.float32,
                 )
-        if self.enable_masks:
-            masks = {}
-            for cam in self.camera_name:
-                masks[self.camera_name_mapping[cam]] = spaces.Box(
-                    low=0.0,
-                high=10.0,  # adjust to your depth range, e.g. meters
-                shape=(self.observation_height, self.observation_width, 1),
-                dtype=np.float32,
-            )
-
         if self.obs_type == "state":
             raise NotImplementedError(
                 "The 'state' observation type is not supported in LiberoEnv. "
@@ -206,7 +194,6 @@ class LiberoEnv(gym.Env):
                     "pixels": spaces.Dict(images),
                     "depth": spaces.Dict(depths),
                     "intrinsics": spaces.Dict(intrinsics),
-                    "mask": spaces.Dict(masks),
                     "agent_pos": spaces.Box(
                         low=AGENT_POS_LOW,
                         high=AGENT_POS_HIGH,
@@ -257,17 +244,12 @@ class LiberoEnv(gym.Env):
         self.task_description = task.language
         task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
 
-        if self.enable_masks:
-            camera_segmentations = ["class", "class", "class"]
-        else:
-            camera_segmentations = None
-            
+       
         env_args = {
             "bddl_file_name": task_bddl_file,
             "camera_heights": self.observation_height,
             "camera_widths": self.observation_width,
             "camera_depths": self.enable_depth,
-            "camera_segmentations": camera_segmentations,
         }
         env = OffScreenRenderEnv(**env_args)
         return env
@@ -275,7 +257,6 @@ class LiberoEnv(gym.Env):
     def _format_raw_obs(self, raw_obs: dict[str, Any]) -> dict[str, Any]:
         images = {}
         images_depth = {}
-        images_mask = {}
         images_intrinsics = {}
         for camera_name in self.camera_name:
             image = raw_obs[camera_name]
@@ -294,36 +275,16 @@ class LiberoEnv(gym.Env):
                 cam_key = key.replace("_image", "")
                 cam_alias = self.camera_name_mapping.get(key, cam_key)
 
-                if depth_key in raw_obs:
-                    depth_img = raw_obs[depth_key]
-                    depth_img = depth_img.astype(np.float32)
-                else:
-                    depth_img = np.zeros(
-                        (self.observation_height, self.observation_width, 1), dtype=np.float32
-                    )
-                images_depth[cam_alias] = depth_img
-                intrinsics = self._get_camera_intrinsics(cam_key, self.observation_width, self.observation_height)
-                images_intrinsics[cam_alias] = intrinsics
-            if self.enable_masks:
-                mask_key = key.replace("_image", "_segmentation_class")
-                cam_key = key.replace("_image", "")
-                cam_alias = self.camera_name_mapping.get(key, cam_key)
-
-                if mask_key in raw_obs:
-                    mask_img = raw_obs[mask_key]
-                    # Remove extra singleton dimension if necessary
-                    mask_img = np.squeeze(mask_img)  # remove all singleton dims
-                    if mask_img.ndim == 2:
-                        mask_img = np.expand_dims(mask_img, axis=-1)
-                    elif mask_img.ndim > 3:
-                        raise ValueError(f"Unexpected mask shape for {mask_key}: {mask_img.shape}")
-
-                    mask_img = mask_img.astype(np.float32)
-                else:
-                    mask_img = np.zeros(
-                        (self.observation_height, self.observation_width, 1), dtype=np.float32
-                    )
-                images_mask[cam_alias] = mask_img
+            if depth_key in raw_obs:
+                depth_img = raw_obs[depth_key]
+                depth_img = depth_img.astype(np.float32)
+            else:
+                depth_img = np.zeros(
+                    (self.observation_height, self.observation_width, 1), dtype=np.float32
+                )
+            images_depth[cam_alias] = depth_img
+            intrinsics = self._get_camera_intrinsics(cam_key, self.observation_width, self.observation_height)
+            images_intrinsics[cam_alias] = intrinsics
         agent_pos = state
         if self.obs_type == "pixels":
             return {"pixels": images.copy()}
@@ -331,7 +292,6 @@ class LiberoEnv(gym.Env):
             return {
                 "pixels": images.copy(),
                 "depth": images_depth,
-                "mask": images_mask,
                 "intrinsics": images_intrinsics,
                 "agent_pos": agent_pos,
             }
@@ -431,7 +391,6 @@ def create_libero_envs(
     init_states: bool = True,
     env_cls: Callable[[Sequence[Callable[[], Any]]], Any] | None = None,
     enable_depth: bool = True,
-    enable_masks: bool = True,
 ) -> dict[str, dict[int, Any]]:
     """
     Create vectorized LIBERO environments with a consistent return shape.
