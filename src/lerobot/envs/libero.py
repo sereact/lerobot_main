@@ -30,7 +30,6 @@ from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from robosuite.utils.transform_utils import quat2axisangle
 
-
 def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     """Normalize camera_name into a non-empty list of strings."""
     if isinstance(camera_name, str):
@@ -42,7 +41,6 @@ def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     if not cams:
         raise ValueError("camera_name resolved to an empty list.")
     return cams
-
 
 def _get_suite(name: str) -> benchmark.Benchmark:
     """Instantiate a LIBERO suite by name with clear validation."""
@@ -95,7 +93,6 @@ TASK_SUITE_MAX_STEPS: dict[str, int] = {
     "libero_90": 400,  # longest training demo has 373 steps
 }
 
-
 class LiberoEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 80}
 
@@ -115,6 +112,8 @@ class LiberoEnv(gym.Env):
         episode_index: int = 0,
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
+        enable_depth: bool = True,
+        enable_masks: bool = True,
     ):
         super().__init__()
         self.task_id = task_id
@@ -125,6 +124,8 @@ class LiberoEnv(gym.Env):
         self.visualization_width = visualization_width
         self.visualization_height = visualization_height
         self.init_states = init_states
+        self.enable_depth = enable_depth
+        self.enable_masks = enable_masks
         self.camera_name = _parse_camera_names(
             camera_name
         )  # agentview_image (main) or robot0_eye_in_hand_image (wrist)
@@ -158,6 +159,32 @@ class LiberoEnv(gym.Env):
                 shape=(self.observation_height, self.observation_width, 3),
                 dtype=np.uint8,
             )
+        if self.enable_depth:
+            depths = {}
+            for cam in self.camera_name:
+                depths[self.camera_name_mapping[cam]] = spaces.Box(
+                    low=0.0,
+                    high=10.0,  # adjust to your depth range, e.g. meters
+                    shape=(self.observation_height, self.observation_width, 1),
+                    dtype=np.float32,
+                )
+            intrinsics = {}
+            for cam in self.camera_name:
+                intrinsics[self.camera_name_mapping[cam]] = spaces.Box(
+                    low=0.0,
+                    high=1.0,
+                    shape=(3, 3),
+                    dtype=np.float32,
+                )
+        if self.enable_masks:
+            masks = {}
+            for cam in self.camera_name:
+                masks[self.camera_name_mapping[cam]] = spaces.Box(
+                    low=0.0,
+                high=10.0,  # adjust to your depth range, e.g. meters
+                shape=(self.observation_height, self.observation_width, 1),
+                dtype=np.float32,
+            )
 
         if self.obs_type == "state":
             raise NotImplementedError(
@@ -169,12 +196,17 @@ class LiberoEnv(gym.Env):
             self.observation_space = spaces.Dict(
                 {
                     "pixels": spaces.Dict(images),
+                    "depth": spaces.Dict(depths),
+                    "intrinsics": spaces.Dict(intrinsics),
                 }
             )
         elif self.obs_type == "pixels_agent_pos":
             self.observation_space = spaces.Dict(
                 {
                     "pixels": spaces.Dict(images),
+                    "depth": spaces.Dict(depths),
+                    "intrinsics": spaces.Dict(intrinsics),
+                    "mask": spaces.Dict(masks),
                     "agent_pos": spaces.Box(
                         low=AGENT_POS_LOW,
                         high=AGENT_POS_HIGH,
@@ -187,11 +219,37 @@ class LiberoEnv(gym.Env):
         self.action_space = spaces.Box(
             low=ACTION_LOW, high=ACTION_HIGH, shape=(ACTION_DIM,), dtype=np.float32
         )
+        # if metadata["include_depth"]:
+        # self.features["depth/agentview_image"] = PolicyFeature(
+        #     type=FeatureType.VISUAL, shape=(self.observation_height, self.observation_width, 1)
+        # )
+        # self.features["depth/robot0_eye_in_hand_image"] = PolicyFeature(
+        #     type=FeatureType.VISUAL, shape=(self.observation_height, self.observation_width, 1)
+        # )
 
     def render(self):
         raw_obs = self._env.env._get_observations()
         image = self._format_raw_obs(raw_obs)["pixels"]["image"]
         return image
+
+    def _get_camera_intrinsics(self, cam_name: str, width: int, height: int) -> np.ndarray:
+        """Compute intrinsic matrix from camera parameters (MuJoCo FOV)."""
+        cam_id = self._env.sim.model.camera_name2id(cam_name)
+        fovy = float(self._env.sim.model.cam_fovy[cam_id])  # degrees
+        fovy_rad = np.deg2rad(fovy)
+
+        f_y = (height / 2.0) / np.tan(fovy_rad / 2.0)
+        f_x = f_y  # assume square pixels
+        c_x = width / 2.0
+        c_y = height / 2.0
+
+        K = np.array(
+            [[f_x, 0, c_x],
+            [0, f_y, c_y],
+            [0, 0, 1]],
+            dtype=np.float32
+        )
+        return K
 
     def _make_envs_task(self, task_suite: Any, task_id: int = 0):
         task = task_suite.get_task(task_id)
@@ -199,17 +257,26 @@ class LiberoEnv(gym.Env):
         self.task_description = task.language
         task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
 
+        if self.enable_masks:
+            camera_segmentations = ["class", "class", "class"]
+        else:
+            camera_segmentations = None
+            
         env_args = {
             "bddl_file_name": task_bddl_file,
             "camera_heights": self.observation_height,
             "camera_widths": self.observation_width,
+            "camera_depths": self.enable_depth,
+            "camera_segmentations": camera_segmentations,
         }
         env = OffScreenRenderEnv(**env_args)
-        env.reset()
         return env
 
     def _format_raw_obs(self, raw_obs: dict[str, Any]) -> dict[str, Any]:
         images = {}
+        images_depth = {}
+        images_mask = {}
+        images_intrinsics = {}
         for camera_name in self.camera_name:
             image = raw_obs[camera_name]
             image = image[::-1, ::-1]  # rotate 180 degrees
@@ -221,12 +288,51 @@ class LiberoEnv(gym.Env):
                 raw_obs["robot0_gripper_qpos"],
             )
         )
+        for key in self.camera_name:
+            if self.enable_depth:
+                depth_key = key.replace("_image", "_depth")
+                cam_key = key.replace("_image", "")
+                cam_alias = self.camera_name_mapping.get(key, cam_key)
+
+                if depth_key in raw_obs:
+                    depth_img = raw_obs[depth_key]
+                    depth_img = depth_img.astype(np.float32)
+                else:
+                    depth_img = np.zeros(
+                        (self.observation_height, self.observation_width, 1), dtype=np.float32
+                    )
+                images_depth[cam_alias] = depth_img
+                intrinsics = self._get_camera_intrinsics(cam_key, self.observation_width, self.observation_height)
+                images_intrinsics[cam_alias] = intrinsics
+            if self.enable_masks:
+                mask_key = key.replace("_image", "_segmentation_class")
+                cam_key = key.replace("_image", "")
+                cam_alias = self.camera_name_mapping.get(key, cam_key)
+
+                if mask_key in raw_obs:
+                    mask_img = raw_obs[mask_key]
+                    # Remove extra singleton dimension if necessary
+                    mask_img = np.squeeze(mask_img)  # remove all singleton dims
+                    if mask_img.ndim == 2:
+                        mask_img = np.expand_dims(mask_img, axis=-1)
+                    elif mask_img.ndim > 3:
+                        raise ValueError(f"Unexpected mask shape for {mask_key}: {mask_img.shape}")
+
+                    mask_img = mask_img.astype(np.float32)
+                else:
+                    mask_img = np.zeros(
+                        (self.observation_height, self.observation_width, 1), dtype=np.float32
+                    )
+                images_mask[cam_alias] = mask_img
         agent_pos = state
         if self.obs_type == "pixels":
             return {"pixels": images.copy()}
         if self.obs_type == "pixels_agent_pos":
             return {
                 "pixels": images.copy(),
+                "depth": images_depth,
+                "mask": images_mask,
+                "intrinsics": images_intrinsics,
                 "agent_pos": agent_pos,
             }
         raise NotImplementedError(
@@ -246,7 +352,7 @@ class LiberoEnv(gym.Env):
         # Increasing this value can improve determinism and reproducibility across resets.
         for _ in range(self.num_steps_wait):
             raw_obs, _, _, _ = self._env.step(get_libero_dummy_action())
-        observation = self._format_raw_obs(raw_obs)
+        observation = self._format_raw_obs(raw_obs) 
         info = {"is_success": False}
         return observation, info
 
@@ -324,6 +430,8 @@ def create_libero_envs(
     camera_name: str | Sequence[str] = "agentview_image,robot0_eye_in_hand_image",
     init_states: bool = True,
     env_cls: Callable[[Sequence[Callable[[], Any]]], Any] | None = None,
+    enable_depth: bool = True,
+    enable_masks: bool = True,
 ) -> dict[str, dict[int, Any]]:
     """
     Create vectorized LIBERO environments with a consistent return shape.

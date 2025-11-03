@@ -28,7 +28,13 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.envs.configs import EnvConfig
 from lerobot.utils.constants import OBS_ENV_STATE, OBS_IMAGE, OBS_IMAGES, OBS_STATE
 from lerobot.utils.utils import get_channel_first_image_shape
+from pathlib import Path
+from PIL import Image
 
+CAMERA_NAME_MAPPING = {
+    "agentview": "image",
+    "robot0_eye_in_hand": "image2",
+}
 
 def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Tensor]:
     # TODO(aliberts, rcadene): refactor this to use features from the environment (no hardcoding)
@@ -68,6 +74,50 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
 
             return_observations[imgkey] = img_tensor
 
+    if "depth" in observations:
+        for cam_alias, depth in observations["depth"].items():
+            # consistent key naming for dataset / model
+            depthkey = f"observation.depths.{cam_alias}"
+            intrinsics_key = f"observation.intrinsics.{cam_alias}"
+
+            depth_tensor = torch.from_numpy(depth)
+            # Ensure shape (B, 1, H, W)
+            depth_tensor = einops.rearrange(depth_tensor, "b h w c -> b c h w")
+
+            depth_tensor = depth_tensor.to(torch.float32)
+            return_observations[depthkey] = depth_tensor
+
+            # --- Intrinsics ---
+            if "intrinsics" in observations and cam_alias in observations["intrinsics"]:
+                intrinsics = torch.from_numpy(observations["intrinsics"][cam_alias]).float()
+                return_observations[intrinsics_key] = intrinsics
+    if "segmentation" in observations:
+        masks = (
+            {f"observation.mask.{k}": v for k, v in observations["mask"].items()}
+            if isinstance(observations["mask"], dict)
+            else {"observation.mask": observations["mask"]}
+        )
+        for i, (maskkey, mask) in enumerate(masks.items()):
+            if i == 0:
+                maskkey = "observation.masks.image"
+            elif i == 1:
+                maskkey = "observation.masks.image2"
+
+            mask_tensor = torch.from_numpy(mask)
+            if mask_tensor.ndim == 3:
+                mask_tensor = mask_tensor.unsqueeze(0)
+            if mask_tensor.ndim == 4 and mask_tensor.shape[-1] == 1:
+                mask_tensor = einops.rearrange(mask_tensor, "b h w c -> b c h w")
+            elif mask_tensor.ndim == 3:
+                mask_tensor = mask_tensor.unsqueeze(1)
+            mask_tensor = mask_tensor.to(torch.float32)
+
+            # Normalize if mask is not already binary
+            if mask_tensor.max() > 1.0:
+                mask_tensor /= 255.0
+
+            return_observations[maskkey] = mask_tensor
+
     if "environment_state" in observations:
         env_state = torch.from_numpy(observations["environment_state"]).float()
         if env_state.dim() == 1:
@@ -89,6 +139,12 @@ def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
     # (need to also refactor preprocess_observation and externalize normalization from policies)
     policy_features = {}
     for key, ft in env_cfg.features.items():
+        if "depth" in key:
+            continue
+        if "mask" in key:
+            continue
+        if "intrinsics" in key:
+            continue
         if ft.type is FeatureType.VISUAL:
             if len(ft.shape) != 3:
                 raise ValueError(f"Number of dimensions of {key} != 3 (shape={ft.shape})")
@@ -125,7 +181,6 @@ def check_env_attributes_and_types(env: gym.vector.VectorEnv) -> None:
                 UserWarning,
                 stacklevel=2,
             )
-
 
 def add_envs_task(env: gym.vector.VectorEnv, observation: dict[str, Any]) -> dict[str, Any]:
     """Adds task feature to the observation dict with respect to the first environment attribute."""

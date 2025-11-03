@@ -677,7 +677,6 @@ def build_dataset_frame(
             frame[key] = np.array([values[name] for name in ft["names"]], dtype=np.float32)
         elif ft["dtype"] in ["image", "video"]:
             frame[key] = values[key.removeprefix(f"{prefix}.images.")]
-
     return frame
 
 

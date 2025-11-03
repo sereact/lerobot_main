@@ -32,6 +32,8 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
     features_map: dict[str, str] = field(default_factory=dict)
     max_parallel_tasks: int = 1
     disable_env_checker: bool = True
+    enable_depth: bool = False
+    enable_masks: bool = False
 
     @property
     def type(self) -> str:
@@ -238,6 +240,8 @@ class LiberoEnv(EnvConfig):
     camera_name_mapping: dict[str, str] | None = None
     observation_height: int = 360
     observation_width: int = 360
+    enable_depth: bool = True
+    enable_masks: bool = True
     features: dict[str, PolicyFeature] = field(
         default_factory=lambda: {
             ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,)),
@@ -249,10 +253,37 @@ class LiberoEnv(EnvConfig):
             "agent_pos": OBS_STATE,
             "pixels/agentview_image": f"{OBS_IMAGES}.image",
             "pixels/robot0_eye_in_hand_image": f"{OBS_IMAGES}.image2",
+
         }
     )
 
     def __post_init__(self):
+        if self.enable_depth:
+            self.features["depth/agentview_image"] = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(self.observation_height, self.observation_width, 1),
+            )
+            self.features["depth/robot0_eye_in_hand_image"] = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(self.observation_height, self.observation_width, 1),
+            )
+            self.features["intrinsics/agentview_image"] = PolicyFeature(
+                type=FeatureType.INTRINSICS,
+                shape=(3, 3),
+            )
+            self.features["intrinsics/robot0_eye_in_hand_image"] = PolicyFeature(
+                type=FeatureType.INTRINSICS,
+                shape=(3, 3),
+            )
+        if self.enable_masks:
+            self.features["masks/agentview_image"] = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(self.observation_height, self.observation_width, 1),
+            )
+            self.features["masks/robot0_eye_in_hand_image"] = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(self.observation_height, self.observation_width, 1),
+            )
         if self.obs_type == "pixels":
             self.features["pixels/agentview_image"] = PolicyFeature(
                 type=FeatureType.VISUAL, shape=(self.observation_height, self.observation_width, 3)
@@ -276,6 +307,8 @@ class LiberoEnv(EnvConfig):
         return {
             "obs_type": self.obs_type,
             "render_mode": self.render_mode,
+            "enable_depth": self.enable_depth,
+            "enable_masks": self.enable_masks,
         }
 
 

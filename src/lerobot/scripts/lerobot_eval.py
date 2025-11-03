@@ -60,15 +60,15 @@ from functools import partial
 from pathlib import Path
 from pprint import pformat
 from typing import Any, TypedDict
-
 import einops
 import gymnasium as gym
-import numpy as np
 import torch
 from termcolor import colored
 from torch import Tensor, nn
 from tqdm import trange
-
+import numpy as np
+import h5py
+import time
 from lerobot.configs import parser
 from lerobot.configs.eval import EvalPipelineConfig
 from lerobot.envs.factory import make_env
@@ -77,11 +77,12 @@ from lerobot.envs.utils import (
     check_env_attributes_and_types,
     close_envs,
     preprocess_observation,
+    CAMERA_NAME_MAPPING,
 )
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
-from lerobot.utils.constants import ACTION, DONE, OBS_STR, REWARD
+from lerobot.utils.constants import ACTION, DONE, OBS_STR, REWARD, OBS_PREFIX
 from lerobot.utils.io_utils import write_video
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.utils import (
@@ -89,7 +90,36 @@ from lerobot.utils.utils import (
     init_logging,
     inside_slurm,
 )
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
+from lerobot.datasets.utils import build_dataset_frame, combine_feature_dicts
 
+def get_features():
+    features = {
+        "timestamp": {"dtype": "float32", "shape": (1,)},
+        "observation.state": {"dtype": "float32", "shape": (8,),"names": ["x", "y", "z", "rx", "ry", "rz", "extra", "grip"]},
+        "action": {"dtype": "float32", "shape": (7,),"names": ["x", "y", "z", "rx", "ry", "rz", "grip"]},
+        "observation.task_instr": {"dtype": "string", "shape": (1,)},
+        "action_type": {"dtype": "string", "shape": (1,)},
+    }
+    
+    for cam in ["agentview", "robot0_eye_in_hand"]:
+        features[f"observation.images.{cam}"] = {
+            "dtype": "image",
+            "shape": (640, 480, 3),
+        }
+
+        features[f"observation.depths.{cam}"] = {
+            "dtype": "image",
+            "shape": (640, 480, 1),
+        }
+
+        features[f"observation.intrinsics.{cam}"] = {
+            "dtype": "float32",
+            "shape": (3, 3),
+        }
+
+    return features
 
 def rollout(
     env: gym.vector.VectorEnv,
@@ -136,6 +166,7 @@ def rollout(
     # Reset the policy and environments.
     policy.reset()
     observation, info = env.reset(seed=seeds)
+
     if render_callback is not None:
         render_callback(env)
 
@@ -161,7 +192,6 @@ def rollout(
         observation = preprocess_observation(observation)
         if return_observations:
             all_observations.append(deepcopy(observation))
-
         # Infer "task" from attributes of environments.
         # TODO: works with SyncVectorEnv but not AsyncVectorEnv
         observation = add_envs_task(env, observation)
@@ -212,11 +242,12 @@ def rollout(
         progbar.set_postfix({"running_success_rate": f"{running_success_rate.item() * 100:.1f}%"})
         progbar.update()
 
+
+    observation = preprocess_observation(observation)
+
     # Track the final observation.
     if return_observations:
-        observation = preprocess_observation(observation)
         all_observations.append(deepcopy(observation))
-
     # Stack the sequence along the first dimension so that we have (batch, sequence, *) tensors.
     ret = {
         ACTION: torch.stack(all_actions, dim=1),
@@ -494,7 +525,7 @@ def eval_main(cfg: EvalPipelineConfig):
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
 
     logging.info("Making environment.")
-    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
+    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs, enable_depth=cfg.env.enable_depth, enable_masks=cfg.env.enable_masks)
 
     logging.info("Making policy.")
 
@@ -528,6 +559,7 @@ def eval_main(cfg: EvalPipelineConfig):
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
+            return_episode_data=True,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
