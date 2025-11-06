@@ -199,6 +199,7 @@ def main(args):
                 intrinsics_a, intrinsics_e = [], []
                 intrinsics_agentview = get_camera_intrinsics(env, "agentview", 480, 480)
                 intrinsics_eye_in_hand = get_camera_intrinsics(env, "robot0_eye_in_hand", 480, 480)
+                absolute_actions = []
                 for _, action in enumerate(orig_actions):
 
                     prev_action = actions[-1] if actions else None
@@ -224,6 +225,7 @@ def main(args):
 
                     intrinsics_a.append(intrinsics_agentview)
                     intrinsics_e.append(intrinsics_eye_in_hand)
+                    
                     if "agentview_depth" in obs:
                         d = obs["agentview_depth"]
                         d = np.ascontiguousarray(d[::-1, ::-1])
@@ -232,6 +234,34 @@ def main(args):
                         d = obs["robot0_eye_in_hand_depth"]
                         d = np.ascontiguousarray(d[::-1, ::-1])
                         eye_in_hand_depths.append(d)
+                    
+                    # add absolute action
+                    eef_pos = obs["robot0_eef_pos"].copy()
+                    eef_quat = obs["robot0_eef_quat"].copy()
+
+                    # --- Compute absolute target pose (matching the controller's internal math) ---
+                    delta_pos = action[:3]
+                    delta_axisangle = action[3:6]
+                    gripper = action[-1]
+
+                    # Convert relative rotation to quaternion
+                    delta_quat = T.axisangle2quat(delta_axisangle)
+
+                    # Combine rotations: q_next = delta * current
+                    target_quat = T.quat_multiply(delta_quat, eef_quat)
+
+                    # Compute next absolute position
+                    target_pos = eef_pos + delta_pos
+
+                    # Convert quaternion → matrix → Euler angles
+                    target_rotmat = T.quat2mat(target_quat)
+                    target_euler = T.mat2euler(np.asarray(target_rotmat, dtype=np.float32))
+
+                    # Combine into absolute action (pos + rotation)
+                    action_abs = np.concatenate([target_pos, target_euler, [gripper]])
+                    # Record absolute target (before step)
+                    absolute_actions.append(action_abs)
+
                     obs, reward, done, info = env.step(action.tolist())
 
                     if done:
@@ -264,6 +294,7 @@ def main(args):
             obs_grp = ep_data_grp.create_group("obs")
             obs_grp.create_dataset("gripper_states", data=np.stack(gripper_states, axis=0))
             obs_grp.create_dataset("joint_states", data=np.stack(joint_states, axis=0))
+            ep_data_grp.create_dataset("actions_absolute", data=np.stack(absolute_actions))
             obs_grp.create_dataset("ee_states", data=np.stack(ee_states, axis=0))
             obs_grp.create_dataset("ee_pos", data=np.stack(ee_states, axis=0)[:, :3])
             obs_grp.create_dataset("ee_ori", data=np.stack(ee_states, axis=0)[:, 3:])
