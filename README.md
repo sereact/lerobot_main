@@ -104,7 +104,7 @@ LeRobot works with Python 3.10+ and PyTorch 2.2+.
 
 ### Environment Setup
 
-Create a virtual environment with Python 3.10 and activate it, e.g. with [`miniforge`](https://conda-forge.org/download/):
+<!-- Create a virtual environment with Python 3.10 and activate it, e.g. with [`miniforge`](https://conda-forge.org/download/):
 
 ```bash
 conda create -y -n lerobot python=3.10
@@ -142,6 +142,13 @@ Then, install the library in editable mode. This is useful if you plan to contri
 
 ```bash
 pip install -e .
+``` -->
+
+Installation using `uv`
+```bash
+  uv sync
+  git clone git@github.com:sereact/lerobot_trossen.git src/lerobot_trossen
+  uv pip install src/lerobot_trossen
 ```
 
 > **NOTE:** If you encounter build errors, you may need to install additional dependencies (`cmake`, `build-essential`, and `ffmpeg libs`). On Linux, run:
