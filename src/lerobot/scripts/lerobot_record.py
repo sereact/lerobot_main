@@ -186,6 +186,8 @@ class RecordConfig:
     play_sounds: bool = True
     # Resume recording on an existing dataset.
     resume: bool = False
+    # Announce finish time in seconds before the end of an episode.
+    announce_finish_time: int | None = None
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.
@@ -256,6 +258,8 @@ def record_loop(
     control_time_s: int | None = None,
     single_task: str | None = None,
     display_data: bool = False,
+    announce_finish_time: int | None = None,
+    play_sounds: bool = False,
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -290,6 +294,10 @@ def record_loop(
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
+
+        if announce_finish_time is not None and control_time_s - timestamp <= announce_finish_time:
+            log_say(f"{announce_finish_time} seconds remaining", play_sounds=play_sounds)
+            announce_finish_time = None  # Announce only once per episode
 
         if events["exit_early"]:
             events["exit_early"] = False
@@ -464,6 +472,8 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 control_time_s=cfg.dataset.episode_time_s,
                 single_task=cfg.dataset.single_task,
                 display_data=cfg.display_data,
+                announce_finish_time=cfg.announce_finish_time,
+                play_sounds=cfg.play_sounds,
             )
 
             # Execute a few seconds without recording to give time to manually reset the environment
