@@ -505,7 +505,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             dataset.save_episode()
             recorded_episodes += 1
 
-    log_say("Stop recording", cfg.play_sounds, blocking=True)
+    log_say("End of recording", cfg.play_sounds, blocking=True)
 
     robot.disconnect()
     if teleop is not None:
