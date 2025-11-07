@@ -147,7 +147,7 @@ pip install -e .
 Installation using `uv`
 ```bash
   uv sync
-  git clone git@github.com:sereact/lerobot_trossen.git src/lerobot_trossen
+  git clone -b sereact git@github.com:sereact/lerobot_trossen.git src/lerobot_trossen
   uv pip install src/lerobot_trossen
 ```
 
