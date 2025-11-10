@@ -35,8 +35,6 @@ def safety_home(cfg: SafetyStopConfig):
     try:
         robot.connect()
         teleoperator.connect()
-        do_safety_stop(robot)
-        do_safety_stop(teleoperator)
     except KeyboardInterrupt:
         pass
     finally:
