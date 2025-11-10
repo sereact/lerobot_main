@@ -1,0 +1,30 @@
+{
+  "dataset": { "repo_id": "sereact/bimanual-widowxai-handover-sorting-figures" },
+
+  "policy": {
+    "type": "pi05",
+    "pretrained_path": "lerobot/pi05_base",
+    "repo_id": "sereact/pi05_finetuned",
+    "dtype": "bfloat16",
+    "compile_model": true,
+    "gradient_checkpointing": true,
+    "device": "cuda",
+    "input_features": {
+      "observation.images.static1": { "type": "VISUAL", "shape": [3, 224, 224] },
+      "observation.images.static2": { "type": "VISUAL", "shape": [3, 224, 224] },
+      "observation.images.wrist1":  { "type": "VISUAL", "shape": [3, 224, 224] },
+      "observation.images.wrist2":  { "type": "VISUAL", "shape": [3, 224, 224] },
+      "observation.state":          { "type": "STATE",  "shape": [14] }
+    },
+
+    "normalization_mapping": { "ACTION": "MEAN_STD", "STATE": "MEAN_STD", "VISUAL": "IDENTITY" }
+  },
+  "resume": false,
+  "batch_size": 1,
+  "steps": 3000,
+  "job_name": "pi05_finetune",
+  "output_dir": "./outputs/pi05_finetune",
+  "wandb": { "enable": true },
+
+  "use_policy_training_preset": true
+}
