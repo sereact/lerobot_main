@@ -79,6 +79,7 @@ from lerobot.envs.utils import (
     preprocess_observation,
     CAMERA_NAME_MAPPING,
 )
+from robosuite.utils import transform_utils as T
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
@@ -165,7 +166,7 @@ def rollout(
 
     # Reset the policy and environments.
     policy.reset()
-    observation, info = env.reset(seed=seeds)
+    obs, info = env.reset(seed=seeds)
 
     if render_callback is not None:
         render_callback(env)
@@ -189,7 +190,7 @@ def rollout(
     check_env_attributes_and_types(env)
     while not np.all(done) and step < max_steps:
         # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
-        observation = preprocess_observation(observation)
+        observation = preprocess_observation(obs)
         if return_observations:
             all_observations.append(deepcopy(observation))
         # Infer "task" from attributes of environments.
@@ -204,8 +205,33 @@ def rollout(
         action_numpy: np.ndarray = action.to("cpu").numpy()
         assert action_numpy.ndim == 2, "Action dimensions should be (batch, action_dim)"
 
+        # compute relative action
+        abs_action = action_numpy
+        gripper_action = action_numpy[-1]
+        target_pos = abs_action[:3]
+        target_euler = abs_action[3:6]
+
+        # --- Current EEF pose from observation ---
+        eef_pos = obs["robot0_eef_pos"].copy()
+        eef_quat = obs["robot0_eef_quat"].copy()
+        eef_mat = T.quat2mat(eef_quat)
+        eef_euler = T.mat2euler(eef_mat)
+
+        # --- Compute relative deltas ---
+        delta_pos = target_pos - eef_pos
+
+        # Convert orientation difference robustly via quaternions
+        target_mat = T.euler2mat(target_euler)
+        target_quat = T.mat2quat(target_mat)
+        delta_quat = T.quat_multiply(target_quat, T.quat_inverse(eef_quat))
+        delta_axisangle = T.quat2axisangle(delta_quat)
+
+        # --- Combine into full relative action ---
+        rel_action = np.concatenate([delta_pos, delta_axisangle, [gripper_action]])
+
+
         # Apply the next action.
-        observation, reward, terminated, truncated, info = env.step(action_numpy)
+        observation, reward, terminated, truncated, info = env.step(rel_action)
         if render_callback is not None:
             render_callback(env)
 

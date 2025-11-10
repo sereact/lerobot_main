@@ -1,11 +1,19 @@
 import h5py
-filename = "/home/ubuntu/mount-point/libero/rollout_20251103_102334.h5"
+filename = "/home/ubuntu/mount-point/libero_abs_eef/libero_depth/libero_10_reg/LIVING_ROOM_SCENE2_put_both_the_alphabet_soup_and_the_tomato_sauce_in_the_basket_demo.hdf5"
 def print_hdf5_structure(name, obj):
     print(name)
 
 with h5py.File(filename, "r") as f:
     f.visititems(print_hdf5_structure)
-    print(f["demo_0/obs/observation.depths.image2"][0])
+    print(f["data/demo_5/obs/ee_pos"][0])
+    print(f["data/demo_5/obs/ee_states"][0])
+    print(f["data/demo_5/obs/gripper_states"][0])
+
+    # print(f["data/demo_5/obs/joint_pos"][0])
+
+    # print(f["data/demo_5/obs/robot_state"][0])
+    print(f["data/demo_5/states"][0])
+    # print(f["data/demo_5/obs/states"][0])
 
 
 #     # if mask.ndim == 3 and mask.shape[-1] == 3:
