@@ -1,0 +1,6 @@
+[submodule "external/libero"]
+	path = external/libero
+	url = https://github.com/elisahagen/libero_ler
+[submodule "external/robosuite"]
+	path = external/robosuite
+	url = https://github.com/elisahagen/robosuite_ler

@@ -33,6 +33,7 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
     max_parallel_tasks: int = 1
     disable_env_checker: bool = True
     enable_depth: bool = False
+    action_type: str = "relative"
 
     @property
     def type(self) -> str:
@@ -240,6 +241,7 @@ class LiberoEnv(EnvConfig):
     observation_height: int = 360
     observation_width: int = 360
     enable_depth: bool = True
+    action_type: str = "relative"
     features: dict[str, PolicyFeature] = field(
         default_factory=lambda: {
             ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,)),

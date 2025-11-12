@@ -29,6 +29,7 @@ from gymnasium import spaces
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from robosuite.utils.transform_utils import quat2axisangle
+from robosuite import load_composite_controller_config
 
 def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     """Normalize camera_name into a non-empty list of strings."""
@@ -76,7 +77,7 @@ def get_task_init_states(task_suite: Any, i: int) -> np.ndarray:
 
 def get_libero_dummy_action():
     """Get dummy/no-op action, used to roll out the simulation while the robot does nothing."""
-    return [0, 0, 0, 0, 0, 0, -1]
+    return np.array([0, 0, 0, 0, 0, 0, -1], dtype=np.float32)
 
 
 OBS_STATE_DIM = 8
@@ -113,6 +114,7 @@ class LiberoEnv(gym.Env):
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
         enable_depth: bool = True,
+        action_type: str = "relative"
     ):
         super().__init__()
         self.task_id = task_id
@@ -124,6 +126,8 @@ class LiberoEnv(gym.Env):
         self.visualization_height = visualization_height
         self.init_states = init_states
         self.enable_depth = enable_depth
+        self.action_type = action_type
+        self.ctrl_config = None
         self.camera_name = _parse_camera_names(
             camera_name
         )  # agentview_image (main) or robot0_eye_in_hand_image (wrist)
@@ -144,7 +148,7 @@ class LiberoEnv(gym.Env):
         # Load once and keep
         self._init_states = get_task_init_states(task_suite, self.task_id) if self.init_states else None
         self._init_state_id = self.episode_index  # tie each sub-env to a fixed init state
-
+        
         self._env = self._make_envs_task(task_suite, self.task_id)
         default_steps = 500
         self._max_episode_steps = TASK_SUITE_MAX_STEPS.get(task_suite_name, default_steps)
@@ -202,6 +206,11 @@ class LiberoEnv(gym.Env):
                     ),
                 }
             )
+        if self.action_type == "absolute":
+            self.ctrl_config = load_composite_controller_config(controller="WHOLE_BODY_IK")
+            self.ctrl_cfg["body_parts"]["right"]["control_delta"] = False
+            self.ctrl_cfg["body_parts"]["right"]["input_type"] = "absolute"
+
 
         self.action_space = spaces.Box(
             low=ACTION_LOW, high=ACTION_HIGH, shape=(ACTION_DIM,), dtype=np.float32
@@ -244,13 +253,14 @@ class LiberoEnv(gym.Env):
         self.task_description = task.language
         task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
 
-       
         env_args = {
             "bddl_file_name": task_bddl_file,
             "camera_heights": self.observation_height,
             "camera_widths": self.observation_width,
             "camera_depths": self.enable_depth,
         }
+        if self.ctrl_config != None:
+            env_args["controller_configs"] = self.ctrl_config
         env = OffScreenRenderEnv(**env_args)
         return env
 
@@ -391,6 +401,7 @@ def create_libero_envs(
     init_states: bool = True,
     env_cls: Callable[[Sequence[Callable[[], Any]]], Any] | None = None,
     enable_depth: bool = True,
+    action_type: str = "relative"
 ) -> dict[str, dict[int, Any]]:
     """
     Create vectorized LIBERO environments with a consistent return shape.

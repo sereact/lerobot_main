@@ -194,90 +194,65 @@ def rollout(
     dataset = dataset["action_abs"]
     check_env_attributes_and_types(env)
     while not np.all(done) and step < max_steps:
-        for i, action_abs in enumerate(dataset):
-            # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
-            observation = preprocess_observation(obs)
-            if return_observations:
-                all_observations.append(deepcopy(observation))
-            # Infer "task" from attributes of environments.
-            # TODO: works with SyncVectorEnv but not AsyncVectorEnv
-            observation = add_envs_task(env, observation)
-            observation = preprocessor(observation)
-            with torch.inference_mode():
-                action = policy.select_action(observation)
-            
-            action = postprocessor(action)
-            action = action_abs
-            # Convert to CPU / numpy.
-            action_numpy = np.array(action_abs, dtype=np.float32).reshape(1, -1)
-            # action_numpy: np.ndarray = action.to("cpu").numpy()
-            assert action_numpy.ndim == 2, "Action dimensions should be (batch, action_dim)"
+        # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
+        observation = preprocess_observation(obs)
+        if return_observations:
+            all_observations.append(deepcopy(observation))
+        # Infer "task" from attributes of environments.
+        # TODO: works with SyncVectorEnv but not AsyncVectorEnv
+        observation = add_envs_task(env, observation)
+        observation = preprocessor(observation)
+        with torch.inference_mode():
+            action = policy.select_action(observation)
 
-            # compute relative action
-            abs_action = action_numpy
-            gripper_action = action_numpy[:,-1][0]
-            target_pos = abs_action[:,:3][0]
-            target_euler = abs_action[:,3:6][0]
+        action = postprocessor(action)
 
-            # --- Current EEF pose from observation ---
-            eef = obs["agent_pos"].copy()
-            eef_pos = eef[:,:3][0]
-            eef_quat = eef[:,3:7][0]
-            # eef_mat = T.quat2mat(eef_quat)
-            # eef_euler = T.mat2euler(eef_mat)
+        if isinstance(action, torch.Tensor):
+            action_np = action.detach().cpu().numpy()
+        else:
+            action_np = np.asarray(action, dtype=np.float32)
 
-            # --- Compute relative deltas ---
-            delta_pos = target_pos - eef_pos
-            # delta_pos = delta_pos[0]
+        # VectorEnv wants shape (B, A); if (A,) add batch dim
+        if action_np.ndim == 1:
+            action_np = action_np[None, :]
 
-            # Convert orientation difference robustly via quaternions
-            target_mat = T.euler2mat(target_euler)
-            target_quat = T.mat2quat(target_mat)
-            delta_quat = T.quat_multiply(target_quat, T.quat_inverse(eef_quat))
-            delta_axisangle = T.quat2axisangle(delta_quat)
+        # Apply the next action.
+        observation, reward, terminated, truncated, info = env.step(action_np)
+        if render_callback is not None:
+            render_callback(env)
 
-            # --- Combine into full relative action ---
-            rel_action = np.concatenate([delta_pos, delta_axisangle, [gripper_action]])
-            print(rel_action)
-            rel_action = np.array(rel_action, dtype=np.float32).reshape(1, -1)
+        # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
+        # available if none of the envs finished.
+        if "final_info" in info:
+            final_info = info["final_info"]
+            if not isinstance(final_info, dict):
+                raise RuntimeError(
+                    "Unsupported `final_info` format: expected dict (Gymnasium >= 1.0). "
+                    "You're likely using an older version of gymnasium (< 1.0). Please upgrade."
+                )
+            successes = final_info["is_success"].tolist()
+        else:
+            successes = [False] * env.num_envs
 
-            # Apply the next action.
-            observation, reward, terminated, truncated, info = env.step(rel_action)
-            if render_callback is not None:
-                render_callback(env)
+        # Keep track of which environments are done so far.
+        # Mark the episode as done if we reach the maximum step limit.
+        # This ensures that the rollout always terminates cleanly at `max_steps`,
+        # and allows logging/saving (e.g., videos) to be triggered consistently.
+        done = terminated | truncated | done
+        if step + 1 == max_steps:
+            done = np.ones_like(done, dtype=bool)
 
-            # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
-            # available if none of the envs finished.
-            if "final_info" in info:
-                final_info = info["final_info"]
-                if not isinstance(final_info, dict):
-                    raise RuntimeError(
-                        "Unsupported `final_info` format: expected dict (Gymnasium >= 1.0). "
-                        "You're likely using an older version of gymnasium (< 1.0). Please upgrade."
-                    )
-                successes = final_info["is_success"].tolist()
-            else:
-                successes = [False] * env.num_envs
+        all_actions.append(torch.from_numpy(action_np))
+        all_rewards.append(torch.from_numpy(reward))
+        all_dones.append(torch.from_numpy(done))
+        all_successes.append(torch.tensor(successes))
 
-            # Keep track of which environments are done so far.
-            # Mark the episode as done if we reach the maximum step limit.
-            # This ensures that the rollout always terminates cleanly at `max_steps`,
-            # and allows logging/saving (e.g., videos) to be triggered consistently.
-            done = terminated | truncated | done
-            if step + 1 == max_steps:
-                done = np.ones_like(done, dtype=bool)
-
-            all_actions.append(torch.from_numpy(action_numpy))
-            all_rewards.append(torch.from_numpy(reward))
-            all_dones.append(torch.from_numpy(done))
-            all_successes.append(torch.tensor(successes))
-
-            step += 1
-            running_success_rate = (
-                einops.reduce(torch.stack(all_successes, dim=1), "b n -> b", "any").numpy().mean()
-            )
-            progbar.set_postfix({"running_success_rate": f"{running_success_rate.item() * 100:.1f}%"})
-            progbar.update()
+        step += 1
+        running_success_rate = (
+            einops.reduce(torch.stack(all_successes, dim=1), "b n -> b", "any").numpy().mean()
+        )
+        progbar.set_postfix({"running_success_rate": f"{running_success_rate.item() * 100:.1f}%"})
+        progbar.update()
 
 
     observation = preprocess_observation(observation)
@@ -562,7 +537,7 @@ def eval_main(cfg: EvalPipelineConfig):
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
 
     logging.info("Making environment.")
-    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs, enable_depth=cfg.env.enable_depth)
+    envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs, enable_depth=cfg.env.enable_depth, action_type=cfg.env.action_type)
 
     logging.info("Making policy.")
 
