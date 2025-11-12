@@ -37,16 +37,16 @@ import tqdm
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
-
 def get_libero_dummy_action(model_family: str):
     """Get dummy/no-op action, used to roll out the simulation while the robot does nothing."""
-    return [0, 0, 0, 0, 0, 0, -1]
+    return np.array([0, 0, 0, 0, 0, 0, -1], dtype=np.float32)
 
 
 def get_libero_env(task, model_family, resolution=480):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
+
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution, "camera_depths": True}
     env = OffScreenRenderEnv(**env_args)
     env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
@@ -236,33 +236,36 @@ def main(args):
                         eye_in_hand_depths.append(d)
                     
                     # add absolute action
-                    eef_pos = obs["robot0_eef_pos"].copy()
-                    eef_quat = obs["robot0_eef_quat"].copy()
+                    # eef_pos = obs["robot0_eef_pos"].copy()
+                    # eef_quat = obs["robot0_eef_quat"].copy()
 
-                    # --- Compute absolute target pose (matching the controller's internal math) ---
-                    delta_pos = action[:3]
-                    delta_axisangle = action[3:6]
-                    gripper = action[-1]
+                    # # --- Compute absolute target pose (matching the controller's internal math) ---
+                    # delta_pos = action[:3]
+                    # delta_axisangle = action[3:6]
+                    # gripper = action[-1]
 
-                    # Convert relative rotation to quaternion
-                    delta_quat = T.axisangle2quat(delta_axisangle)
+                    # # Convert relative rotation to quaternion
+                    # delta_quat = T.axisangle2quat(delta_axisangle)
 
-                    # Combine rotations: q_next = delta * current
-                    target_quat = T.quat_multiply(delta_quat, eef_quat)
+                    # # Combine rotations: q_next = delta * current
+                    # target_quat = T.quat_multiply(delta_quat, eef_quat)
 
-                    # Compute next absolute position
-                    target_pos = eef_pos + delta_pos
+                    # # Compute next absolute position
+                    # target_pos = eef_pos + delta_pos
 
-                    # Convert quaternion → matrix → Euler angles
-                    target_rotmat = T.quat2mat(target_quat)
-                    target_euler = T.mat2euler(np.asarray(target_rotmat, dtype=np.float32))
+                    # # Convert quaternion → matrix → Euler angles
+                    # target_rotmat = T.quat2mat(target_quat)
+                    # target_euler = T.mat2euler(np.asarray(target_rotmat, dtype=np.float32))
 
-                    # Combine into absolute action (pos + rotation)
-                    action_abs = np.concatenate([target_pos, target_euler, [gripper]])
+                    # # Combine into absolute action (pos + rotation)
+                    # action_abs = np.concatenate([target_pos, target_euler, [gripper]])
                     # Record absolute target (before step)
-                    absolute_actions.append(action_abs)
+                    obs, reward, done, info = env.step(action)
 
-                    obs, reward, done, info = env.step(action.tolist())
+
+                    goal_pos = env.env.robots[0].controller.goal_pos
+                    state_ori = T.quat2axisangle(T.mat2quat(env.env.robots[0].controller.goal_ori))
+                    absolute_actions.append(np.concatenate([goal_pos, state_ori, action[-1:]]))
 
                     if done:
                         done = True

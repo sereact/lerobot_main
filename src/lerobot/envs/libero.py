@@ -207,9 +207,9 @@ class LiberoEnv(gym.Env):
                 }
             )
         if self.action_type == "absolute":
-            self.ctrl_config = load_composite_controller_config(controller="WHOLE_BODY_IK")
-            self.ctrl_cfg["body_parts"]["right"]["control_delta"] = False
-            self.ctrl_cfg["body_parts"]["right"]["input_type"] = "absolute"
+            self.ctrl_config = load_composite_controller_config(controller="BASIC")
+            self.ctrl_config["body_parts"]["right"]["control_delta"] = True
+            # self.ctrl_config["body_parts"]["right"]["input_type"] = "absolute"
 
 
         self.action_space = spaces.Box(
