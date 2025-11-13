@@ -29,7 +29,6 @@ from gymnasium import spaces
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from robosuite.utils.transform_utils import quat2axisangle
-from robosuite import load_composite_controller_config
 
 def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     """Normalize camera_name into a non-empty list of strings."""
@@ -207,9 +206,8 @@ class LiberoEnv(gym.Env):
                 }
             )
         if self.action_type == "absolute":
-            self.ctrl_config = load_composite_controller_config(controller="BASIC")
-            self.ctrl_config["body_parts"]["right"]["control_delta"] = True
-            # self.ctrl_config["body_parts"]["right"]["input_type"] = "absolute"
+            self.ctrl_config["body_parts"]["right"]["control_delta"] = False
+            self.ctrl_config["body_parts"]["right"]["input_type"] = "absolute"
 
 
         self.action_space = spaces.Box(
@@ -376,8 +374,8 @@ def _make_env_fns(
         local_kwargs = dict(kwargs)
         return LiberoEnv(
             task_suite=suite,
-            task_id=task_id,
-            task_suite_name=suite_name,
+            task_id=1, #task_id,
+            task_suite_name="pick_up_the_bbq_sauce_and_place_it_in_the_basket_demo", #suite_name,
             camera_name=camera_names,
             init_states=init_states,
             episode_index=episode_index,

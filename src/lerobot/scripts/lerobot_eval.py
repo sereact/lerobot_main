@@ -163,6 +163,13 @@ def rollout(
     Returns:
         The dictionary described above.
     """
+    episode_key = "demo_1"
+    actions = None
+    hdf_path = "/home/ubuntu/mount-point/libero_regenerate_abs/libero_absolute/libero_object_reg/pick_up_the_bbq_sauce_and_place_it_in_the_basket_demo.hdf5"
+    with h5py.File(hdf_path, "r") as f:
+        ep = f["data"][episode_key]
+        actions = ep["actions_absolute"][()]
+        obs_ori = ep["obs"]["ee_ori"][()]
     assert isinstance(policy, nn.Module), "Policy must be a PyTorch nn module."
 
     # Reset the policy and environments.
@@ -188,12 +195,14 @@ def rollout(
         disable=inside_slurm(),  # we dont want progress bar when we use slurm, since it clutters the logs
         leave=False,
     )
-    dataset = pd.read_parquet("/home/ubuntu/sereact_lerobot_data/libero_reg_v3/libero_absolute_ler/libero_10_l3/LIVING_ROOM_SCENE1_put_both_the_alphabet_soup_and_the_cream_cheese_box_in_the_basket_demo/data/chunk-000/file-000.parquet")
-    dataset = dataset[dataset["episode_index"] == 0].reset_index(drop=True)
+    # dataset = pd.read_parquet("/home/ubuntu/sereact_lerobot_data/libero_reg_v3/libero_absolute_ler/libero_10_l3/LIVING_ROOM_SCENE1_put_both_the_alphabet_soup_and_the_cream_cheese_box_in_the_basket_demo/data/chunk-000/file-000.parquet")
+    # dataset = dataset[dataset["episode_index"] == 0].reset_index(drop=True)
 
-    dataset = dataset["action_abs"]
+    # dataset = dataset["action_abs"]
     check_env_attributes_and_types(env)
-    while not np.all(done) and step < max_steps:
+    env.envs[0]._env.robots[0].controller.use_delta=False
+    print("controller set done")
+    while not np.all(done) and step < max_steps and step <= len(actions) - 1:
         # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
         observation = preprocess_observation(obs)
         if return_observations:
@@ -205,7 +214,13 @@ def rollout(
         with torch.inference_mode():
             action = policy.select_action(observation)
 
-        action = postprocessor(action)
+        action = actions[step]
+        xyz = actions[step][:3]
+        ori = obs_ori[step+1]
+        grip = actions[step][-1]
+        action = np.concatenate([xyz, ori, [grip]])
+
+        # action = postprocessor(action)
 
         if isinstance(action, torch.Tensor):
             action_np = action.detach().cpu().numpy()
@@ -217,10 +232,22 @@ def rollout(
             action_np = action_np[None, :]
 
         # Apply the next action.
-        observation, reward, terminated, truncated, info = env.step(action_np)
-        if render_callback is not None:
-            render_callback(env)
+        terminated_episode = False
+        for i in range(10): 
+            observation, reward, terminated, truncated, info = env.step(action_np)
+            
+            if render_callback is not None:
+                render_callback(env)
+            print(terminated)
+            if terminated[0]:
+                terminated_episode = True
+                break
 
+            # Outer loop must stop if episode ended
+            if terminated_episode:
+                done = np.ones_like(done, dtype=bool)
+                break
+           
         # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
         # available if none of the envs finished.
         if "final_info" in info:
@@ -240,6 +267,9 @@ def rollout(
         # and allows logging/saving (e.g., videos) to be triggered consistently.
         done = terminated | truncated | done
         if step + 1 == max_steps:
+            done = np.ones_like(done, dtype=bool)
+        
+        if step + 1 == len(actions) - 1:
             done = np.ones_like(done, dtype=bool)
 
         all_actions.append(torch.from_numpy(action_np))
@@ -373,7 +403,7 @@ def eval_policy(
         # this won't be included).
         n_steps = rollout_data["done"].shape[1]
         # Note: this relies on a property of argmax: that it returns the first occurrence as a tiebreaker.
-        done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
+        done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)*10
 
         # Make a mask with shape (batch, n_steps) to mask out rollout data after the first done
         # (batch-element-wise). Note the `done_indices + 1` to make sure to keep the data from the done step.
@@ -418,6 +448,7 @@ def eval_policy(
                     break
 
                 videos_dir.mkdir(parents=True, exist_ok=True)
+                print("VIDEOS DIR: ",videos_dir)
                 video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
                 video_paths.append(str(video_path))
                 thread = threading.Thread(
@@ -522,7 +553,6 @@ def _compile_episode_data(
 
     return data_dict
 
-
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
     logging.info(pformat(asdict(cfg)))
@@ -541,9 +571,11 @@ def eval_main(cfg: EvalPipelineConfig):
 
     logging.info("Making policy.")
 
+    env_cfg = deepcopy(cfg.env)
+
     policy = make_policy(
         cfg=cfg.policy,
-        env_cfg=cfg.env,
+        env_cfg=env_cfg,
         rename_map=cfg.rename_map,
     )
 
@@ -805,6 +837,7 @@ def eval_policy_all(
 def main():
     init_logging()
     eval_main()
+
 
 
 if __name__ == "__main__":
