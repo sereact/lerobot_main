@@ -1038,7 +1038,7 @@ class PI05Policy(PreTrainedPolicy):
         if not hasattr(self, "_thread_local"):
             self._thread_local = threading.local()
         action_queue = getattr(self._thread_local, "action_queue", None)
-        if action_queue is None or action_queue.maxlen != self.config.n_action_steps:
+        if action_queue is None:
             action_queue = self._new_action_queue()
             self._thread_local.action_queue = action_queue
         return action_queue
@@ -1049,13 +1049,10 @@ class PI05Policy(PreTrainedPolicy):
         return self._get_thread_action_queue()
 
     @_action_queue.setter
-    def _action_queue(self, queue: deque | None) -> None:
+    def _action_queue(self, queue: deque) -> None:
         if not hasattr(self, "_thread_local"):
             self._thread_local = threading.local()
-        if queue is None:
-            queue = self._new_action_queue()
-        elif queue.maxlen != self.config.n_action_steps:
-            queue = deque(queue, maxlen=self.config.n_action_steps)
+
         self._thread_local.action_queue = queue
 
     def reset(self):
