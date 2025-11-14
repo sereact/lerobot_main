@@ -169,7 +169,6 @@ def rollout(
     with h5py.File(hdf_path, "r") as f:
         ep = f["data"][episode_key]
         actions = ep["actions_absolute"][()]
-        obs_ori = ep["obs"]["ee_ori"][()]
     assert isinstance(policy, nn.Module), "Policy must be a PyTorch nn module."
 
     # Reset the policy and environments.
@@ -201,7 +200,6 @@ def rollout(
     # dataset = dataset["action_abs"]
     check_env_attributes_and_types(env)
     env.envs[0]._env.robots[0].controller.use_delta=False
-    print("controller set done")
     while not np.all(done) and step < max_steps and step <= len(actions) - 1:
         # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
         observation = preprocess_observation(obs)
@@ -211,16 +209,12 @@ def rollout(
         # TODO: works with SyncVectorEnv but not AsyncVectorEnv
         observation = add_envs_task(env, observation)
         observation = preprocessor(observation)
+
         with torch.inference_mode():
             action = policy.select_action(observation)
+        action = postprocessor(action)
 
         action = actions[step]
-        xyz = actions[step][:3]
-        ori = obs_ori[step+1]
-        grip = actions[step][-1]
-        action = np.concatenate([xyz, ori, [grip]])
-
-        # action = postprocessor(action)
 
         if isinstance(action, torch.Tensor):
             action_np = action.detach().cpu().numpy()
@@ -232,22 +226,11 @@ def rollout(
             action_np = action_np[None, :]
 
         # Apply the next action.
-        terminated_episode = False
-        for i in range(10): 
-            observation, reward, terminated, truncated, info = env.step(action_np)
-            
-            if render_callback is not None:
-                render_callback(env)
-            print(terminated)
-            if terminated[0]:
-                terminated_episode = True
-                break
+        observation, reward, terminated, truncated, info = env.step(action_np)
+       
+        if render_callback is not None:
+            render_callback(env)
 
-            # Outer loop must stop if episode ended
-            if terminated_episode:
-                done = np.ones_like(done, dtype=bool)
-                break
-           
         # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
         # available if none of the envs finished.
         if "final_info" in info:
@@ -307,7 +290,6 @@ def rollout(
         policy.use_original_modules()
 
     return ret
-
 
 def eval_policy(
     env: gym.vector.VectorEnv,
