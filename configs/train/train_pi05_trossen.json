@@ -19,8 +19,8 @@
 
     "normalization_mapping": { "ACTION": "MEAN_STD", "STATE": "MEAN_STD", "VISUAL": "IDENTITY" }
   },
-  "resume": false,
-  "batch_size": 1,
+  "resume": true,
+  "batch_size": 2,
   "steps": 3000,
   "job_name": "pi05_finetune",
   "output_dir": "./outputs/pi05_finetune",
