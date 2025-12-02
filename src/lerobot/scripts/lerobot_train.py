@@ -179,15 +179,21 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     torch.backends.cuda.matmul.allow_tf32 = True
 
     # Dataset loading synchronization: main process downloads first to avoid race conditions
+    test_dataset = None
     if is_main_process:
         logging.info("Creating dataset")
         dataset = make_dataset(cfg)
+        if cfg.dataset_test is not None:
+            logging.info("Creating test dataset")
+            test_dataset = make_dataset(cfg, dataset_cfg=cfg.dataset_test)
 
     accelerator.wait_for_everyone()
 
     # Now all other processes can safely load the dataset
     if not is_main_process:
         dataset = make_dataset(cfg)
+        if cfg.dataset_test is not None:
+            test_dataset = make_dataset(cfg, dataset_cfg=cfg.dataset_test)
 
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
@@ -294,12 +300,29 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         drop_last=False,
         prefetch_factor=2 if cfg.num_workers > 0 else None,
     )
+    test_dataloader = None
+    if test_dataset is not None and cfg.batch_size_test is not None:
+        test_dataloader = torch.utils.data.DataLoader(
+            test_dataset,
+            num_workers=cfg.num_workers,
+            batch_size=cfg.batch_size_test,
+            shuffle=False,
+            sampler=None,
+            pin_memory=device.type == "cuda",
+            drop_last=False,
+            prefetch_factor=2 if cfg.num_workers > 0 else None,
+        )
 
     # Prepare everything with accelerator
     accelerator.wait_for_everyone()
-    policy, optimizer, dataloader, lr_scheduler = accelerator.prepare(
-        policy, optimizer, dataloader, lr_scheduler
-    )
+    if test_dataloader is not None:
+        policy, optimizer, dataloader, test_dataloader, lr_scheduler = accelerator.prepare(
+            policy, optimizer, dataloader, test_dataloader, lr_scheduler
+        )
+    else:
+        policy, optimizer, dataloader, lr_scheduler = accelerator.prepare(
+            policy, optimizer, dataloader, lr_scheduler
+        )
     dl_iter = cycle(dataloader)
 
     policy.train()
@@ -378,6 +401,40 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     wandb_logger.log_policy(checkpoint_dir)
 
             accelerator.wait_for_everyone()
+
+        if is_eval_step and test_dataloader is not None:
+            eval_start_time = time.perf_counter()
+            test_loss_meter = AverageMeter("t_loss", ":.3f")
+            policy.eval()
+            with torch.no_grad():
+                for test_batch in test_dataloader:
+                    test_batch = preprocessor(test_batch)
+                    with accelerator.autocast():
+                        test_loss, _ = policy.forward(test_batch)
+                    test_loss_meter.update(test_loss.item())
+            eval_duration = time.perf_counter() - eval_start_time
+
+            reduced_test_metrics = torch.tensor(
+                [test_loss_meter.sum, test_loss_meter.count], device=device, dtype=torch.float32
+            )
+            reduced_test_metrics = accelerator.gather(reduced_test_metrics)
+
+            if is_main_process:
+                total_loss_sum = reduced_test_metrics[:, 0].sum().item()
+                total_count = reduced_test_metrics[:, 1].sum().item()
+                avg_test_loss = total_loss_sum / total_count if total_count > 0 else float("nan")
+                logging.info(
+                    f"Test loss at step {step}: {avg_test_loss:.3f} (eval_s={eval_duration:.3f})"
+                )
+                if wandb_logger:
+                    wandb_logger.log_dict(
+                        {"test_loss": avg_test_loss, "test_eval_s": eval_duration},
+                        step,
+                        mode="eval",
+                    )
+
+            accelerator.wait_for_everyone()
+            policy.train()
 
         if cfg.env and is_eval_step:
             if is_main_process:

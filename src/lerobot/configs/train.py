@@ -36,6 +36,7 @@ TRAIN_CONFIG_NAME = "train_config.json"
 @dataclass
 class TrainPipelineConfig(HubMixin):
     dataset: DatasetConfig
+    dataset_test: DatasetConfig | None = None
     env: envs.EnvConfig | None = None
     policy: PreTrainedConfig | None = None
     # Set `dir` to where you would like to save all of the run outputs. If you run another training session
@@ -53,6 +54,7 @@ class TrainPipelineConfig(HubMixin):
     # Number of workers for the dataloader.
     num_workers: int = 4
     batch_size: int = 8
+    batch_size_test: int | None = None
     steps: int = 100_000
     eval_freq: int = 20_000
     log_freq: int = 200
@@ -118,6 +120,11 @@ class TrainPipelineConfig(HubMixin):
 
         if isinstance(self.dataset.repo_id, list):
             raise NotImplementedError("LeRobotMultiDataset is not currently implemented.")
+        if self.dataset_test and isinstance(self.dataset_test.repo_id, list):
+            raise NotImplementedError("LeRobotMultiDataset is not currently implemented for dataset_test.")
+
+        if (self.dataset_test is None) != (self.batch_size_test is None):
+            raise ValueError("Both dataset_test and batch_size_test must be set together for evaluation.")
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")
