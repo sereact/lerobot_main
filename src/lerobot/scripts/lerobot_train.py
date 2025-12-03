@@ -18,6 +18,7 @@ import time
 from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
+from tqdm import tqdm
 
 import torch
 from accelerate import Accelerator
@@ -407,7 +408,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             test_loss_meter = AverageMeter("t_loss", ":.3f")
             policy.eval()
             with torch.no_grad():
-                for test_batch in test_dataloader:
+                for test_batch in tqdm(test_dataloader, desc="Test evaluation", disable=not is_main_process):
                     test_batch = preprocessor(test_batch)
                     with accelerator.autocast():
                         test_loss, _ = policy.forward(test_batch)
@@ -417,7 +418,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             reduced_test_metrics = torch.tensor(
                 [test_loss_meter.sum, test_loss_meter.count], device=device, dtype=torch.float32
             )
-            reduced_test_metrics = accelerator.gather(reduced_test_metrics)
+            reduced_test_metrics = accelerator.gather(reduced_test_metrics).view(-1, 2)
 
             if is_main_process:
                 total_loss_sum = reduced_test_metrics[:, 0].sum().item()
