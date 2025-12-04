@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import os
 import time
 from contextlib import nullcontext
 from pprint import pformat
@@ -24,6 +25,9 @@ import torch
 from accelerate import Accelerator
 from termcolor import colored
 from torch.optim import Optimizer
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
@@ -122,6 +126,63 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
+
+
+def evaluate_on_test_dataset(
+    *,
+    step: int,
+    policy: PreTrainedPolicy,
+    test_dataloader,
+    preprocessor,
+    accelerator: Accelerator,
+    device: torch.device,
+    wandb_logger: WandBLogger | None,
+    is_main_process: bool,
+):
+    """Runs evaluation on the offline test split and logs aggregated losses."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    eval_start_time = time.perf_counter()
+    test_loss_meter = AverageMeter("t_loss", ":.3f")
+
+    policy.eval()
+    with torch.no_grad():
+        for test_batch in tqdm(
+            test_dataloader, desc="Test evaluation", disable=not is_main_process
+        ):
+            test_batch = preprocessor(test_batch)
+            with accelerator.autocast():
+                test_loss, _ = policy.forward(test_batch)
+            test_loss_meter.update(test_loss.item())
+            del test_batch, test_loss
+
+    eval_duration = time.perf_counter() - eval_start_time
+    reduced_test_metrics = torch.tensor(
+        [test_loss_meter.sum, test_loss_meter.count], device=device, dtype=torch.float32
+    )
+    reduced_test_metrics = accelerator.gather(reduced_test_metrics).view(-1, 2)
+
+    if is_main_process:
+        total_loss_sum = reduced_test_metrics[:, 0].sum().item()
+        total_count = reduced_test_metrics[:, 1].sum().item()
+        avg_test_loss = total_loss_sum / total_count if total_count > 0 else float("nan")
+        logging.info(f"Test loss at step {step}: {avg_test_loss:.3f} (eval_s={eval_duration:.3f})")
+        if wandb_logger:
+            wandb_logger.log_dict(
+                {"test_loss": avg_test_loss, "test_eval_s": eval_duration},
+                step,
+                mode="eval",
+            )
+
+    accelerator.wait_for_everyone()
+    if hasattr(accelerator, "free_memory"):
+        accelerator.free_memory()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    policy.train()
+    del reduced_test_metrics
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 @parser.wrap()
@@ -347,8 +408,22 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         accelerator=accelerator,
     )
 
+    should_run_test_eval = test_dataloader is not None and cfg.eval_freq > 0
+
     if is_main_process:
         logging.info("Start offline training on a fixed dataset")
+
+    if should_run_test_eval:
+        evaluate_on_test_dataset(
+            step=step,
+            policy=policy,
+            test_dataloader=test_dataloader,
+            preprocessor=preprocessor,
+            accelerator=accelerator,
+            device=device,
+            wandb_logger=wandb_logger,
+            is_main_process=is_main_process,
+        )
 
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
@@ -403,39 +478,17 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
             accelerator.wait_for_everyone()
 
-        if is_eval_step and test_dataloader is not None:
-            eval_start_time = time.perf_counter()
-            test_loss_meter = AverageMeter("t_loss", ":.3f")
-            policy.eval()
-            with torch.no_grad():
-                for test_batch in tqdm(test_dataloader, desc="Test evaluation", disable=not is_main_process):
-                    test_batch = preprocessor(test_batch)
-                    with accelerator.autocast():
-                        test_loss, _ = policy.forward(test_batch)
-                    test_loss_meter.update(test_loss.item())
-            eval_duration = time.perf_counter() - eval_start_time
-
-            reduced_test_metrics = torch.tensor(
-                [test_loss_meter.sum, test_loss_meter.count], device=device, dtype=torch.float32
+        if should_run_test_eval and is_eval_step:
+            evaluate_on_test_dataset(
+                step=step,
+                policy=policy,
+                test_dataloader=test_dataloader,
+                preprocessor=preprocessor,
+                accelerator=accelerator,
+                device=device,
+                wandb_logger=wandb_logger,
+                is_main_process=is_main_process,
             )
-            reduced_test_metrics = accelerator.gather(reduced_test_metrics).view(-1, 2)
-
-            if is_main_process:
-                total_loss_sum = reduced_test_metrics[:, 0].sum().item()
-                total_count = reduced_test_metrics[:, 1].sum().item()
-                avg_test_loss = total_loss_sum / total_count if total_count > 0 else float("nan")
-                logging.info(
-                    f"Test loss at step {step}: {avg_test_loss:.3f} (eval_s={eval_duration:.3f})"
-                )
-                if wandb_logger:
-                    wandb_logger.log_dict(
-                        {"test_loss": avg_test_loss, "test_eval_s": eval_duration},
-                        step,
-                        mode="eval",
-                    )
-
-            accelerator.wait_for_everyone()
-            policy.train()
 
         if cfg.env and is_eval_step:
             if is_main_process:
